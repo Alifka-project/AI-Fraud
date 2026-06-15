@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+ml-service/venv/
+ml-service/.venv/
+
+# Production builds
+.next/
+out/
+build/
+dist/
+
+# Environment
+.env
+.env.local
+.env.production
+.env.development
+
+# Database
+*.db
+*.db-journal
+prisma/dev.db
+prisma/dev.db-journal
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# ML artifacts (keep small ones, exclude large)
+ml-service/models/*.joblib
+!ml-service/models/.gitkeep
+
+# Uploads
+public/uploads/
+ml-service/uploads/
+
+# Typescript
+*.tsbuildinfo
+next-env.d.ts

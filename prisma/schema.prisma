@@ -1,0 +1,112 @@
+// InvestorShield UAE - Prisma database schema
+//
+// The MVP currently runs the analysis statelessly via API routes + localStorage,
+// so the database is optional. To enable persistence:
+//
+//   * Local demo (SQLite):    set DATABASE_URL=file:./dev.db and switch
+//                             `provider = "sqlite"` below.
+//   * Production (Postgres):  set DATABASE_URL to your Postgres URL and keep
+//                             `provider = "postgresql"`.
+//
+// `prisma generate` only reads the schema; it does NOT need DATABASE_URL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model UserAnalysis {
+  id            String   @id @default(cuid())
+  sessionId     String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  notes         String?
+
+  company       UploadedCompany?
+  riskAssessment RiskAssessment?
+  report        Report?
+}
+
+model UploadedCompany {
+  id             String   @id @default(cuid())
+  analysisId     String   @unique
+  name           String
+  industry       String?
+  location       String?
+  requestedAmount Float?
+  notes          String?
+  fileName       String?
+  fileType       String?
+  createdAt      DateTime @default(now())
+
+  analysis       UserAnalysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+  financialRecords FinancialRecord[]
+}
+
+model FinancialRecord {
+  id                 String   @id @default(cuid())
+  companyId          String
+  year               Int
+  revenue            Float
+  netIncome          Float
+  totalAssets        Float
+  totalLiabilities   Float
+  equity             Float
+  cash               Float
+  operatingCashFlow  Float
+  receivables        Float
+  debt               Float
+  costOfGoodsSold    Float
+  expenses           Float
+  createdAt          DateTime @default(now())
+
+  company            UploadedCompany @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, year])
+}
+
+model RiskAssessment {
+  id                  String   @id @default(cuid())
+  analysisId          String   @unique
+  overallScore        Float
+  riskLevel           String   // "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+  mlFraudProbability  Float
+  anomalyScore        Float
+  manipulationScore   Float
+  liquidityScore      Float
+  documentScore       Float
+  externalScore       Float
+  explanation         String   // JSON: feature importances or SHAP-like data
+  llmSummary          String
+  ratiosJson          String   // JSON: computed financial ratios
+  createdAt           DateTime @default(now())
+
+  analysis            UserAnalysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+  redFlags            RedFlag[]
+}
+
+model RedFlag {
+  id              String   @id @default(cuid())
+  assessmentId    String
+  code            String   // machine-readable identifier, e.g. "REVENUE_CASH_DIVERGENCE"
+  title           String
+  severity        String   // "low" | "medium" | "high" | "critical"
+  description     String
+  metric          String?  // optional metric name involved
+  metricValue     Float?
+
+  assessment      RiskAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+}
+
+model Report {
+  id           String   @id @default(cuid())
+  analysisId   String   @unique
+  content      String   // serialized JSON of the full report payload
+  createdAt    DateTime @default(now())
+
+  analysis     UserAnalysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+}
