@@ -11,9 +11,16 @@ import {
   Workflow,
   ArrowRight,
 } from "lucide-react";
+import type { Metadata } from "next";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { SectionHeading } from "@/components/site/section-heading";
+
+export const metadata: Metadata = {
+  title: "Methodology",
+  description:
+    "How InvestorShield UAE scores fraud risk: financial ratio engine, Beneish M-Score, Altman Z-Score, XGBoost, Isolation Forest, SHAP, and LLM review.",
+};
 
 export default function MethodologyPage() {
   return (
