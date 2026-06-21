@@ -41,6 +41,7 @@ export function generatePdfReport(result: RiskAssessmentResult): void {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   const pageWidth = doc.internal.pageSize.getWidth();
   const marginX = 40;
+  const currency = result.company.currency || "AED";
 
   // Header bar
   doc.setFillColor(10, 31, 61);
@@ -97,7 +98,7 @@ export function generatePdfReport(result: RiskAssessmentResult): void {
     [
       "Requested investment",
       result.company.requestedAmount
-        ? `AED ${result.company.requestedAmount.toLocaleString()}`
+        ? `${currency} ${result.company.requestedAmount.toLocaleString()}`
         : "—",
     ],
     ["Years analysed", String(result.records.length)],
@@ -192,7 +193,7 @@ export function generatePdfReport(result: RiskAssessmentResult): void {
   }
   doc.setFont("helvetica", "bold");
   doc.setFontSize(13);
-  doc.text("Financial History (AED)", marginX, y);
+  doc.text(`Financial History (${currency})`, marginX, y);
   y += 10;
 
   autoTable(doc, {

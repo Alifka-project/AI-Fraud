@@ -69,6 +69,7 @@ export default function ReportPage() {
   }
 
   const latest = [...result.records].sort((a, b) => a.year - b.year).slice(-1)[0];
+  const currency = result.company.currency || "AED";
 
   return (
     <div className="container py-10">
@@ -139,7 +140,7 @@ export default function ReportPage() {
                 label="Requested investment"
                 value={
                   result.company.requestedAmount
-                    ? formatCurrency(result.company.requestedAmount)
+                    ? formatCurrency(result.company.requestedAmount, currency)
                     : "—"
                 }
               />

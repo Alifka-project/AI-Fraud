@@ -33,6 +33,7 @@ prisma/dev.db-journal
 # IDE / OS
 .vscode/
 .idea/
+.claude/
 .DS_Store
 Thumbs.db
 

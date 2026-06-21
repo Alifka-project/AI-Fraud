@@ -108,13 +108,16 @@ async def upload_analyze(
         meta = {}
 
     detected_company: Optional[str] = None
+    detected_currency: Optional[str] = None
 
     # PDF path: extract figures (LLM or heuristic) into record dicts.
     if filename.endswith(".pdf"):
         from .pdf_extract import extract_financials_from_pdf
 
         try:
-            pdf_records, _warnings, _method, detected_company = extract_financials_from_pdf(raw)
+            pdf_records, _warnings, _method, detected_company, detected_currency = (
+                extract_financials_from_pdf(raw)
+            )
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=f"Could not parse PDF: {exc}")
         if not pdf_records:
@@ -146,6 +149,7 @@ async def upload_analyze(
         location=meta.get("location"),
         requested_amount=meta.get("requestedAmount") or meta.get("requested_amount"),
         notes=meta.get("notes"),
+        currency=meta.get("currency") or detected_currency,
     )
 
     records = [FinancialRecordInput(**row) for row in record_dicts]

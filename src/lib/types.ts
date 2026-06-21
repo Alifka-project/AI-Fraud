@@ -23,6 +23,7 @@ export interface CompanyMetadata {
   location?: string;
   requestedAmount?: number;
   notes?: string;
+  currency?: string;
 }
 
 export interface AnalysisRequest {

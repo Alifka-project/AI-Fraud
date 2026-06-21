@@ -195,6 +195,7 @@ export default function UploadPage() {
         location: location || undefined,
         requestedAmount: requestedAmount ? Number(requestedAmount) : undefined,
         notes: notes || undefined,
+        currency: extraction?.detectedCurrency || undefined,
       },
       records: parsedRecords,
     };

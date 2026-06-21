@@ -16,16 +16,18 @@ import type { FinancialRecordInput } from "@/lib/types";
 
 interface Props {
   records: FinancialRecordInput[];
+  currency?: string;
 }
 
 function fmt(v: number) {
   const abs = Math.abs(v);
+  if (abs >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(1)}B`;
   if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
   if (abs >= 1_000) return `${(v / 1_000).toFixed(0)}K`;
   return v.toFixed(0);
 }
 
-export function RevenueIncomeChart({ records }: Props) {
+export function RevenueIncomeChart({ records, currency = "AED" }: Props) {
   const data = [...records]
     .sort((a, b) => a.year - b.year)
     .map((r) => ({
@@ -41,7 +43,7 @@ export function RevenueIncomeChart({ records }: Props) {
         <XAxis dataKey="year" stroke="#64748b" fontSize={12} />
         <YAxis stroke="#64748b" fontSize={12} tickFormatter={fmt} />
         <Tooltip
-          formatter={(value: number) => `AED ${value.toLocaleString()}`}
+          formatter={(value: number) => `${currency} ${value.toLocaleString()}`}
           contentStyle={{ borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 12 }}
         />
         <Legend wrapperStyle={{ fontSize: 12 }} />
@@ -73,7 +75,7 @@ export function RevenueIncomeChart({ records }: Props) {
   );
 }
 
-export function BalanceSheetChart({ records }: Props) {
+export function BalanceSheetChart({ records, currency = "AED" }: Props) {
   const data = [...records]
     .sort((a, b) => a.year - b.year)
     .map((r) => ({
@@ -89,7 +91,7 @@ export function BalanceSheetChart({ records }: Props) {
         <XAxis dataKey="year" stroke="#64748b" fontSize={12} />
         <YAxis stroke="#64748b" fontSize={12} tickFormatter={fmt} />
         <Tooltip
-          formatter={(value: number) => `AED ${value.toLocaleString()}`}
+          formatter={(value: number) => `${currency} ${value.toLocaleString()}`}
           contentStyle={{ borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 12 }}
         />
         <Legend wrapperStyle={{ fontSize: 12 }} />
@@ -101,7 +103,7 @@ export function BalanceSheetChart({ records }: Props) {
   );
 }
 
-export function ReceivablesDebtChart({ records }: Props) {
+export function ReceivablesDebtChart({ records, currency = "AED" }: Props) {
   const data = [...records]
     .sort((a, b) => a.year - b.year)
     .map((r) => ({
@@ -117,7 +119,7 @@ export function ReceivablesDebtChart({ records }: Props) {
         <XAxis dataKey="year" stroke="#64748b" fontSize={12} />
         <YAxis stroke="#64748b" fontSize={12} tickFormatter={fmt} />
         <Tooltip
-          formatter={(value: number) => `AED ${value.toLocaleString()}`}
+          formatter={(value: number) => `${currency} ${value.toLocaleString()}`}
           contentStyle={{ borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 12 }}
         />
         <Legend wrapperStyle={{ fontSize: 12 }} />

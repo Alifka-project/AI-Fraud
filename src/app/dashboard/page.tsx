@@ -53,6 +53,7 @@ export default function DashboardPage() {
   }
 
   const latest = [...result.records].sort((a, b) => a.year - b.year).slice(-1)[0];
+  const currency = result.company.currency || "AED";
 
   return (
     <div className="container py-10 space-y-8">
@@ -135,26 +136,26 @@ export default function DashboardPage() {
               <FinancialCard
                 icon={Banknote}
                 label="Latest revenue"
-                value={formatCurrency(latest.revenue)}
+                value={formatCurrency(latest.revenue, currency)}
                 sub={`FY${latest.year}`}
               />
               <FinancialCard
                 icon={ChartBar}
                 label="Net income"
-                value={formatCurrency(latest.netIncome)}
+                value={formatCurrency(latest.netIncome, currency)}
                 sub={formatPercent(result.ratios.netProfitMargin) + " margin"}
               />
               <FinancialCard
                 icon={Activity}
                 label="Operating cash flow"
-                value={formatCurrency(latest.operatingCashFlow)}
+                value={formatCurrency(latest.operatingCashFlow, currency)}
                 sub={`OCF/NI ${result.ratios.ocfToNetIncome.toFixed(2)}×`}
                 warn={latest.operatingCashFlow < 0}
               />
               <FinancialCard
                 icon={Building2}
                 label="Total assets"
-                value={formatCurrency(latest.totalAssets)}
+                value={formatCurrency(latest.totalAssets, currency)}
                 sub={`Leverage ${(result.ratios.leverageRatio * 100).toFixed(0)}%`}
               />
             </>
@@ -176,7 +177,7 @@ export default function DashboardPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <RevenueIncomeChart records={result.records} />
+            <RevenueIncomeChart records={result.records} currency={currency} />
           </CardContent>
         </Card>
         <Card>
@@ -185,7 +186,7 @@ export default function DashboardPage() {
             <CardDescription>Assets, liabilities, and equity over time.</CardDescription>
           </CardHeader>
           <CardContent>
-            <BalanceSheetChart records={result.records} />
+            <BalanceSheetChart records={result.records} currency={currency} />
           </CardContent>
         </Card>
         <Card className="lg:col-span-2">
@@ -197,7 +198,7 @@ export default function DashboardPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <ReceivablesDebtChart records={result.records} />
+            <ReceivablesDebtChart records={result.records} currency={currency} />
           </CardContent>
         </Card>
       </div>

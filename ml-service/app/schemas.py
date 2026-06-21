@@ -41,6 +41,7 @@ class CompanyMetadata(CamelModel):
     location: Optional[str] = None
     requested_amount: Optional[float] = None
     notes: Optional[str] = None
+    currency: Optional[str] = None
 
 
 class AnalysisRequest(CamelModel):

@@ -29,6 +29,7 @@ InvestorShield UAE is an academic, production-ready MVP that lets investors, len
 ## Features
 
 - **PDF / Excel / CSV upload** — drop a PDF financial statement and the platform extracts the figures automatically (AI-powered with a rule-based fallback), then lets you review and correct them in an editable table before analysis. Excel and CSV are parsed in-process (Node), so it all works on Vercel without the Python service.
+- **Real multi-page filings** — the parser targets the income statement, balance sheet, and cash-flow statement inside long documents (e.g. a 28-page SEC 10-Q), handles "in millions/thousands" scaling, multi-column reporting periods, and auto-detects the reporting currency (USD/AED/EUR/…). Validated end-to-end on a real Apple Inc. 10-Q (extracts revenue, net income, OCF, assets, equity, debt to the exact figure).
 - **End-to-end pipeline** — upload PDF/CSV/Excel → extract → verify → ratios → ML signals → red flags → dashboard → PDF report.
 - **0–100 risk score** mapped to four tiers: Low, Medium, High, Critical.
 - **16+ forensic ratios** with Beneish-style and Altman-style indicators.
