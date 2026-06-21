@@ -101,37 +101,54 @@ async def upload_analyze(
 ):
     raw = await file.read()
     filename = (file.filename or "").lower()
-    try:
-        if filename.endswith((".xlsx", ".xls")):
-            df = pd.read_excel(io.BytesIO(raw))
-        elif filename.endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(raw))
-        else:
-            # Try CSV by default.
-            df = pd.read_csv(io.BytesIO(raw))
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
-
-    df = _normalise_columns(df)
-    if df.empty:
-        raise HTTPException(
-            status_code=400, detail="No usable financial rows extracted from the file."
-        )
 
     try:
         meta = json.loads(company) if company else {}
     except json.JSONDecodeError:
         meta = {}
 
+    detected_company: Optional[str] = None
+
+    # PDF path: extract figures (LLM or heuristic) into record dicts.
+    if filename.endswith(".pdf"):
+        from .pdf_extract import extract_financials_from_pdf
+
+        try:
+            pdf_records, _warnings, _method, detected_company = extract_financials_from_pdf(raw)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"Could not parse PDF: {exc}")
+        if not pdf_records:
+            raise HTTPException(
+                status_code=422,
+                detail="No financial figures extracted from the PDF (it may be a scanned image).",
+            )
+        record_dicts = pdf_records
+    else:
+        # CSV / Excel path via pandas.
+        try:
+            if filename.endswith((".xlsx", ".xls")):
+                df = pd.read_excel(io.BytesIO(raw))
+            else:
+                df = pd.read_csv(io.BytesIO(raw))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
+
+        df = _normalise_columns(df)
+        if df.empty:
+            raise HTTPException(
+                status_code=400, detail="No usable financial rows extracted from the file."
+            )
+        record_dicts = df.to_dict(orient="records")
+
     company_meta = CompanyMetadata(
-        name=meta.get("name") or file.filename or "Uploaded Company",
+        name=meta.get("name") or detected_company or file.filename or "Uploaded Company",
         industry=meta.get("industry"),
         location=meta.get("location"),
         requested_amount=meta.get("requestedAmount") or meta.get("requested_amount"),
         notes=meta.get("notes"),
     )
 
-    records = [FinancialRecordInput(**row) for row in df.to_dict(orient="records")]
+    records = [FinancialRecordInput(**row) for row in record_dicts]
     return run_analysis(AnalysisRequest(company=company_meta, records=records))
 
 

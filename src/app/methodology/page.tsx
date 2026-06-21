@@ -48,8 +48,8 @@ export default function MethodologyPage() {
             {
               step: "1",
               icon: Layers,
-              title: "Parse",
-              body: "CSV/Excel → normalised annual records (revenue, NI, assets, liabilities, equity, OCF, receivables, debt, COGS, expenses).",
+              title: "Extract",
+              body: "PDF (AI + rule-based), Excel, or CSV → normalised annual records (revenue, NI, assets, liabilities, equity, OCF, receivables, debt, COGS, expenses), reviewed in an editable table.",
             },
             {
               step: "2",
@@ -322,7 +322,7 @@ export default function MethodologyPage() {
             {[
               "ML model is trained on synthetically generated Dubai SME profiles, not real audited data.",
               "Beneish M-score and Altman Z-score use proxy formulas — public-firm variables are partially substituted with private-firm equivalents.",
-              "PDF/OCR ingestion is scaffolded but the production pipeline expects structured CSV/Excel.",
+              "PDF ingestion reads text-based statements (AI extraction with a rule-based fallback); scanned image-only PDFs require OCR, which is not yet enabled — use CSV/Excel for those.",
               "LLM narrative depends on prompt and model quality; the rule-based fallback ensures the demo works offline.",
               "External verification (trade licence, KYB) is currently a placeholder weight — integrations are out of scope for the MVP.",
               "Risk score is informational; it must not be used as the sole input to any investment, lending, or procurement decision.",

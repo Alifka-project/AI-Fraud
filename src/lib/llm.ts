@@ -8,12 +8,17 @@
 import type {
   CompanyMetadata,
   FinancialRatios,
+  FinancialRecordInput,
   RedFlag,
   RiskAssessmentResult,
 } from "./types";
 
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const DEFAULT_BASE = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
+
+export function hasLlmKey(): boolean {
+  return Boolean((process.env.OPENAI_API_KEY ?? "").trim());
+}
 
 interface LlmInput {
   company: CompanyMetadata;
@@ -125,4 +130,187 @@ export async function maybeEnhanceWithLlm(
     llmSummary: llm.summary,
     modelInfo: { ...result.modelInfo, llmProvider: llm.provider },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Financial-statement extraction from raw document text (PDF/Excel/free text).
+// Uses OpenAI JSON mode for robust structured extraction. Returns null when no
+// key is configured or the call fails — callers then use the heuristic parser.
+// ---------------------------------------------------------------------------
+
+export interface LlmExtractionResult {
+  companyName: string | null;
+  currency: string | null;
+  records: FinancialRecordInput[];
+  notes: string[];
+}
+
+const NUMERIC_FIELDS: (keyof FinancialRecordInput)[] = [
+  "revenue",
+  "netIncome",
+  "totalAssets",
+  "totalLiabilities",
+  "equity",
+  "cash",
+  "operatingCashFlow",
+  "receivables",
+  "debt",
+  "costOfGoodsSold",
+  "expenses",
+];
+
+function coerceNumber(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const cleaned = value.replace(/[(),\s]/g, "").replace(/[^0-9.\-]/g, "");
+    const n = Number(cleaned);
+    if (Number.isFinite(n)) {
+      // Honour parentheses-as-negative if the original had them.
+      return /\(/.test(value) ? -Math.abs(n) : n;
+    }
+  }
+  return 0;
+}
+
+function normaliseExtractedRecords(raw: unknown): FinancialRecordInput[] {
+  if (!Array.isArray(raw)) return [];
+  const out: FinancialRecordInput[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const obj = item as Record<string, unknown>;
+    const year = Math.round(coerceNumber(obj.year));
+    if (!year || year < 1990 || year > 2100) continue;
+    const record: FinancialRecordInput = {
+      year,
+      revenue: 0,
+      netIncome: 0,
+      totalAssets: 0,
+      totalLiabilities: 0,
+      equity: 0,
+      cash: 0,
+      operatingCashFlow: 0,
+      receivables: 0,
+      debt: 0,
+      costOfGoodsSold: 0,
+      expenses: 0,
+    };
+    for (const f of NUMERIC_FIELDS) {
+      record[f] = coerceNumber(obj[f]);
+    }
+    // Costs are magnitudes regardless of how the statement signs them.
+    record.costOfGoodsSold = Math.abs(record.costOfGoodsSold);
+    record.expenses = Math.abs(record.expenses);
+    out.push(record);
+  }
+  return out.sort((a, b) => a.year - b.year);
+}
+
+export async function extractFinancialsWithLlm(
+  documentText: string
+): Promise<LlmExtractionResult | null> {
+  const apiKey = (process.env.OPENAI_API_KEY ?? "").trim();
+  if (!apiKey) return null;
+
+  // Cap input to control token usage; the headline figures of a financial
+  // statement almost always appear in the first pages.
+  const text = documentText.slice(0, 18000);
+
+  const systemPrompt =
+    "You are a precise financial-statement data-extraction engine. You read the raw text of a company's financial statements (income statement, balance sheet, cash-flow statement) and return STRICT JSON. Never invent figures — use 0 for any value you cannot find. Output absolute currency units: if the statement says values are in thousands or millions, multiply accordingly. Use negative numbers for losses and cash outflows (including figures shown in parentheses).";
+
+  const userPrompt = [
+    "Extract every fiscal year present in the document. Return JSON with this exact shape:",
+    "{",
+    '  "companyName": string | null,',
+    '  "currency": string | null,',
+    '  "records": [',
+    "    {",
+    '      "year": number,',
+    '      "revenue": number,',
+    '      "netIncome": number,',
+    '      "totalAssets": number,',
+    '      "totalLiabilities": number,',
+    '      "equity": number,',
+    '      "cash": number,',
+    '      "operatingCashFlow": number,',
+    '      "receivables": number,',
+    '      "debt": number,',
+    '      "costOfGoodsSold": number,',
+    '      "expenses": number',
+    "    }",
+    "  ],",
+    '  "notes": string[]',
+    "}",
+    "",
+    "Field guidance:",
+    "- revenue = total sales / turnover / total revenue.",
+    "- netIncome = net profit / profit for the year (negative if a loss).",
+    "- operatingCashFlow = net cash from operating activities (negative if outflow).",
+    "- receivables = trade/accounts receivable.",
+    "- debt = total borrowings / loans (short + long term).",
+    "- costOfGoodsSold = cost of sales / cost of revenue.",
+    "- expenses = operating expenses / SG&A (exclude COGS).",
+    "- equity = total shareholders' / owners' equity.",
+    "Put any assumptions or unit conversions you made into notes[].",
+    "",
+    "DOCUMENT TEXT:",
+    "```",
+    text,
+    "```",
+  ].join("\n");
+
+  try {
+    const res = await fetch(`${DEFAULT_BASE.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: DEFAULT_MODEL,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0,
+        max_tokens: 1500,
+        response_format: { type: "json_object" },
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!res.ok) {
+      console.warn(`LLM extraction returned ${res.status}: ${await res.text()}`);
+      return null;
+    }
+    const data = await res.json();
+    const content: string = data?.choices?.[0]?.message?.content ?? "";
+    if (!content) return null;
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      // Some models wrap JSON in prose; try to recover the JSON object.
+      const match = content.match(/\{[\s\S]*\}/);
+      if (!match) return null;
+      parsed = JSON.parse(match[0]);
+    }
+
+    const records = normaliseExtractedRecords(parsed.records);
+    if (records.length === 0) return null;
+
+    return {
+      companyName:
+        typeof parsed.companyName === "string" ? parsed.companyName : null,
+      currency: typeof parsed.currency === "string" ? parsed.currency : null,
+      records,
+      notes: Array.isArray(parsed.notes)
+        ? parsed.notes.filter((n): n is string => typeof n === "string")
+        : [],
+    };
+  } catch (err) {
+    console.warn("LLM extraction failed:", err);
+    return null;
+  }
 }

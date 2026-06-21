@@ -14,6 +14,9 @@ ml-service/.venv/
 out/
 build/
 dist/
+# Alternate build output dir used to avoid synced-folder races (see README)
+tmp/
+ishield_next/
 
 # Environment
 .env

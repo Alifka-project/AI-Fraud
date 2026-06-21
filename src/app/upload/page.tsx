@@ -5,11 +5,13 @@ import { useState, useRef } from "react";
 import {
   Upload,
   FileSpreadsheet,
+  FileText,
   CheckCircle2,
   AlertCircle,
   Loader2,
   Sparkles,
   Building2,
+  Pencil,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -19,13 +21,27 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { SectionHeading } from "@/components/site/section-heading";
+import { EditableRecordsTable } from "@/components/upload/editable-records";
 import { SAMPLE_COMPANIES, type SampleCompany } from "@/lib/sample-companies";
 import { parseFinancialsCsv, SAMPLE_CSV_HEADER } from "@/lib/csv-parser";
 import { useAnalysis } from "@/lib/analysis-context";
-import type { AnalysisRequest, FinancialRecordInput } from "@/lib/types";
+import type {
+  AnalysisRequest,
+  FinancialRecordInput,
+  UploadExtractionResponse,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type UploadState = "idle" | "parsing" | "uploaded" | "analyzing" | "error";
+
+type ExtractionMeta = UploadExtractionResponse["extraction"] | null;
+
+const METHOD_LABELS: Record<string, string> = {
+  csv: "CSV parsed",
+  xlsx: "Excel parsed",
+  "pdf-llm": "PDF · AI extraction",
+  "pdf-heuristic": "PDF · rule-based extraction",
+};
 
 export default function UploadPage() {
   const router = useRouter();
@@ -39,39 +55,54 @@ export default function UploadPage() {
 
   const [parsedRecords, setParsedRecords] = useState<FinancialRecordInput[]>([]);
   const [parseWarnings, setParseWarnings] = useState<string[]>([]);
+  const [extraction, setExtraction] = useState<ExtractionMeta>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [uploadState, setUploadState] = useState<UploadState>("idle");
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  function resetUpload() {
+    setParsedRecords([]);
+    setParseWarnings([]);
+    setExtraction(null);
+    setFileName(null);
+    setUploadState("idle");
+    setProgress(0);
+    setError(null);
+  }
+
   function handleFile(file: File) {
     setError(null);
     setFileName(file.name);
+    setExtraction(null);
     const lower = file.name.toLowerCase();
-    if (!lower.endsWith(".csv") && !lower.endsWith(".xlsx") && !lower.endsWith(".xls")) {
-      setError("Unsupported format. Please upload a CSV or Excel file.");
+    const isCsv = lower.endsWith(".csv");
+    const isExcel = lower.endsWith(".xlsx") || lower.endsWith(".xls");
+    const isPdf = lower.endsWith(".pdf");
+
+    if (!isCsv && !isExcel && !isPdf) {
+      setError("Unsupported format. Please upload a CSV, Excel (.xlsx/.xls), or PDF file.");
       setUploadState("error");
       return;
     }
-    setUploadState("parsing");
-    setProgress(20);
 
-    if (lower.endsWith(".csv")) {
+    // CSV is parsed instantly in the browser; Excel/PDF go to the server route.
+    if (isCsv) {
+      setUploadState("parsing");
+      setProgress(30);
       const reader = new FileReader();
       reader.onload = (e) => {
         const content = String(e.target?.result ?? "");
         const { records, warnings } = parseFinancialsCsv(content);
-        setProgress(80);
         if (records.length === 0) {
-          setError(
-            warnings.join(" ") || "Could not extract any financial rows from the file."
-          );
+          setError(warnings.join(" ") || "Could not extract any financial rows from the file.");
           setUploadState("error");
           return;
         }
         setParsedRecords(records);
         setParseWarnings(warnings);
+        setExtraction({ method: "csv", confidence: "high" });
         setUploadState("uploaded");
         setProgress(100);
       };
@@ -80,37 +111,51 @@ export default function UploadPage() {
         setUploadState("error");
       };
       reader.readAsText(file);
-    } else {
-      // Excel: defer to backend service which will parse it.
-      // For MVP we send raw file to /api/upload-analyze.
-      handleExcelUpload(file);
+      return;
     }
+
+    void handleServerParse(file, isPdf);
   }
 
-  async function handleExcelUpload(file: File) {
-    setUploadState("analyzing");
-    setProgress(40);
+  async function handleServerParse(file: File, isPdf: boolean) {
+    setUploadState("parsing");
+    setProgress(isPdf ? 20 : 40);
+    // Animate progress while the server works (PDF + LLM can take a few seconds).
+    const tick = setInterval(() => {
+      setProgress((p) => (p < 85 ? p + 4 : p));
+    }, 250);
+
     try {
       const formData = new FormData();
       formData.append("file", file);
       formData.append(
         "company",
-        JSON.stringify({
-          name: companyName || file.name.replace(/\.[^.]+$/, ""),
-          industry,
-          location,
-          requestedAmount: requestedAmount ? Number(requestedAmount) : undefined,
-          notes,
-        })
+        JSON.stringify({ name: companyName || file.name.replace(/\.[^.]+$/, "") })
       );
       const res = await fetch("/api/upload", { method: "POST", body: formData });
-      if (!res.ok) throw new Error((await res.text()) || "Upload failed");
+      clearInterval(tick);
+
       const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || data?.detail || `Server returned ${res.status}`);
+      }
+
+      const payload = data as UploadExtractionResponse;
+      if (!payload.records || payload.records.length === 0) {
+        throw new Error("No financial records could be extracted from the file.");
+      }
+
+      setParsedRecords(payload.records);
+      setParseWarnings(payload.warnings ?? []);
+      setExtraction(payload.extraction);
+      if (!companyName && payload.extraction?.detectedCompanyName) {
+        setCompanyName(payload.extraction.detectedCompanyName);
+      }
+      setUploadState("uploaded");
       setProgress(100);
-      setResult(data);
-      router.push("/dashboard");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed");
+      clearInterval(tick);
+      setError(err instanceof Error ? err.message : "Failed to parse the file.");
       setUploadState("error");
     }
   }
@@ -119,12 +164,11 @@ export default function UploadPage() {
     setCompanyName(s.payload.company.name);
     setIndustry(s.payload.company.industry ?? "");
     setLocation(s.payload.company.location ?? "");
-    setRequestedAmount(
-      s.payload.company.requestedAmount?.toString() ?? ""
-    );
+    setRequestedAmount(s.payload.company.requestedAmount?.toString() ?? "");
     setNotes(s.payload.company.notes ?? "");
     setParsedRecords(s.payload.records);
     setParseWarnings([]);
+    setExtraction(null);
     setFileName(`${s.id}.sample`);
     setUploadState("uploaded");
     setError(null);
@@ -140,6 +184,7 @@ export default function UploadPage() {
       setError("Please provide a company name.");
       return;
     }
+    setError(null);
     setUploadState("analyzing");
     setProgress(15);
 
@@ -194,16 +239,19 @@ export default function UploadPage() {
     URL.revokeObjectURL(a.href);
   }
 
+  const isPdfExtraction =
+    extraction?.method === "pdf-llm" || extraction?.method === "pdf-heuristic";
+
   return (
     <div className="container py-12">
       <SectionHeading
         eyebrow="Step 1 of 3"
         title="Upload company financial statements"
-        description="Provide a CSV or Excel file with annual financial data, then optionally fill in the company profile. You can also pick a pre-loaded Dubai SME sample for a one-click demo."
+        description="Upload a PDF, Excel, or CSV financial statement. The platform extracts the figures automatically — then you can review and correct them before running the AI risk analysis. Or pick a pre-loaded Dubai SME sample for a one-click demo."
       />
 
       <div className="mt-10 grid lg:grid-cols-3 gap-8">
-        {/* Left: upload + parsed preview */}
+        {/* Left: upload + editable preview */}
         <div className="lg:col-span-2 space-y-6">
           <Card>
             <CardHeader>
@@ -212,9 +260,10 @@ export default function UploadPage() {
                 Financial statement file
               </CardTitle>
               <CardDescription>
-                Required columns: year, revenue, net_income, total_assets, total_liabilities,
-                equity, cash, operating_cash_flow, receivables, debt, cost_of_goods_sold, expenses.
-                Column order doesn&apos;t matter.
+                <strong>PDF</strong> income statements / balance sheets are read automatically.
+                <strong> CSV/Excel</strong> should include columns such as year, revenue,
+                net_income, total_assets, total_liabilities, equity, cash, operating_cash_flow,
+                receivables, debt, cost_of_goods_sold, expenses.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -227,45 +276,76 @@ export default function UploadPage() {
                       ? "border-emerald-300 bg-emerald-50/50"
                       : "border-navy-200 bg-navy-50/40 hover:bg-navy-50"
                 )}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const f = e.dataTransfer.files?.[0];
+                  if (f) handleFile(f);
+                }}
               >
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".csv,.xlsx,.xls"
+                  accept=".csv,.xlsx,.xls,.pdf,application/pdf,text/csv"
                   className="hidden"
                   onChange={(e) => {
                     const f = e.target.files?.[0];
                     if (f) handleFile(f);
+                    e.target.value = "";
                   }}
                 />
-                {uploadState === "uploaded" ? (
+                {uploadState === "parsing" ? (
+                  <div className="space-y-2">
+                    <Loader2 className="h-10 w-10 text-teal-600 mx-auto animate-spin" />
+                    <p className="font-semibold text-navy-900">
+                      {isPdfExtraction || fileName?.toLowerCase().endsWith(".pdf")
+                        ? "Reading PDF and extracting figures…"
+                        : "Parsing file…"}
+                    </p>
+                    <p className="text-xs text-muted-foreground">{fileName}</p>
+                  </div>
+                ) : uploadState === "uploaded" ? (
                   <div className="space-y-2">
                     <CheckCircle2 className="h-10 w-10 text-emerald-600 mx-auto" />
                     <p className="font-semibold text-navy-900">{fileName}</p>
                     <p className="text-sm text-muted-foreground">
-                      Parsed {parsedRecords.length} financial year{parsedRecords.length === 1 ? "" : "s"}.
+                      Extracted {parsedRecords.length} financial year
+                      {parsedRecords.length === 1 ? "" : "s"}.
                     </p>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setParsedRecords([]);
-                        setFileName(null);
-                        setUploadState("idle");
-                        setProgress(0);
-                      }}
-                    >
+                    {extraction ? (
+                      <div className="flex items-center justify-center gap-2">
+                        <Badge
+                          variant={
+                            extraction.confidence === "high"
+                              ? "success"
+                              : extraction.confidence === "medium"
+                                ? "warning"
+                                : "danger"
+                          }
+                        >
+                          {METHOD_LABELS[extraction.method] ?? extraction.method}
+                        </Badge>
+                        <span className="text-xs text-muted-foreground">
+                          {extraction.confidence} confidence
+                          {extraction.pages ? ` · ${extraction.pages} page${extraction.pages === 1 ? "" : "s"}` : ""}
+                        </span>
+                      </div>
+                    ) : null}
+                    <Button variant="outline" size="sm" onClick={resetUpload}>
                       Choose a different file
                     </Button>
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    <FileSpreadsheet className="h-10 w-10 text-teal-600 mx-auto" />
+                    <div className="flex items-center justify-center gap-2">
+                      <FileText className="h-9 w-9 text-teal-600" />
+                      <FileSpreadsheet className="h-9 w-9 text-navy-500" />
+                    </div>
                     <p className="font-medium text-navy-900">
-                      Drop a CSV or Excel file, or click to browse
+                      Drag &amp; drop a PDF, Excel, or CSV — or click to browse
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      CSV (recommended) · XLSX · XLS · up to 10 MB
+                      PDF · XLSX · XLS · CSV · up to 15 MB
                     </p>
                     <div className="flex items-center justify-center gap-3">
                       <Button onClick={() => fileInputRef.current?.click()} variant="primary">
@@ -273,22 +353,33 @@ export default function UploadPage() {
                         Choose file
                       </Button>
                       <Button onClick={downloadSampleCsv} variant="outline">
-                        Download template
+                        Download CSV template
                       </Button>
                     </div>
                   </div>
                 )}
-                {progress > 0 && uploadState !== "idle" ? (
+                {progress > 0 && uploadState !== "idle" && uploadState !== "uploaded" ? (
                   <div className="mt-6">
                     <Progress value={progress} />
                   </div>
                 ) : null}
               </div>
 
+              {isPdfExtraction ? (
+                <div className="rounded-md border border-teal-200 bg-teal-50 p-3 text-xs text-teal-900 flex gap-2">
+                  <Pencil className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+                  <div>
+                    Figures were auto-extracted from your PDF. <strong>Review and correct</strong>{" "}
+                    every value in the editable table below before running the analysis — document
+                    extraction is not guaranteed to be perfect.
+                  </div>
+                </div>
+              ) : null}
+
               {parseWarnings.length > 0 ? (
                 <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
                   <div className="flex items-center gap-2 font-semibold">
-                    <AlertCircle className="h-3.5 w-3.5" /> Parse warnings
+                    <AlertCircle className="h-3.5 w-3.5" /> Extraction notes
                   </div>
                   <ul className="mt-1 list-disc list-inside space-y-0.5">
                     {parseWarnings.map((w, i) => (
@@ -310,42 +401,17 @@ export default function UploadPage() {
           {parsedRecords.length > 0 ? (
             <Card>
               <CardHeader>
-                <CardTitle>Parsed financial data</CardTitle>
+                <CardTitle className="flex items-center gap-2">
+                  <Pencil className="h-4 w-4 text-teal-600" />
+                  Review &amp; edit financial data
+                </CardTitle>
                 <CardDescription>
-                  Quick check before analysis. All values in AED unless otherwise noted.
+                  All values in AED. Correct any mis-read figures, add or remove a year, then run
+                  the analysis. Years are columns; line items are rows.
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-xs">
-                    <thead>
-                      <tr className="border-b border-navy-100 text-left text-navy-700">
-                        <th className="py-2 pr-3 font-semibold">Year</th>
-                        <th className="py-2 pr-3 font-semibold">Revenue</th>
-                        <th className="py-2 pr-3 font-semibold">Net Income</th>
-                        <th className="py-2 pr-3 font-semibold">OCF</th>
-                        <th className="py-2 pr-3 font-semibold">Assets</th>
-                        <th className="py-2 pr-3 font-semibold">Liabilities</th>
-                        <th className="py-2 pr-3 font-semibold">Receivables</th>
-                        <th className="py-2 pr-3 font-semibold">Debt</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {parsedRecords.map((r) => (
-                        <tr key={r.year} className="border-b border-navy-50">
-                          <td className="py-2 pr-3 font-semibold text-navy-900">{r.year}</td>
-                          <td className="py-2 pr-3">{r.revenue.toLocaleString()}</td>
-                          <td className="py-2 pr-3">{r.netIncome.toLocaleString()}</td>
-                          <td className="py-2 pr-3">{r.operatingCashFlow.toLocaleString()}</td>
-                          <td className="py-2 pr-3">{r.totalAssets.toLocaleString()}</td>
-                          <td className="py-2 pr-3">{r.totalLiabilities.toLocaleString()}</td>
-                          <td className="py-2 pr-3">{r.receivables.toLocaleString()}</td>
-                          <td className="py-2 pr-3">{r.debt.toLocaleString()}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <EditableRecordsTable records={parsedRecords} onChange={setParsedRecords} />
               </CardContent>
             </Card>
           ) : null}
@@ -437,9 +503,7 @@ export default function UploadPage() {
           <Card>
             <CardHeader>
               <CardTitle>Quick-start samples</CardTitle>
-              <CardDescription>
-                Pre-loaded Dubai SME profiles for live demos.
-              </CardDescription>
+              <CardDescription>Pre-loaded Dubai SME profiles for live demos.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-2">
               {SAMPLE_COMPANIES.map((s) => (

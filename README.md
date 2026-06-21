@@ -28,7 +28,8 @@ InvestorShield UAE is an academic, production-ready MVP that lets investors, len
 
 ## Features
 
-- **End-to-end pipeline** — upload CSV/Excel → ratios → ML signals → red flags → dashboard → PDF report.
+- **PDF / Excel / CSV upload** — drop a PDF financial statement and the platform extracts the figures automatically (AI-powered with a rule-based fallback), then lets you review and correct them in an editable table before analysis. Excel and CSV are parsed in-process (Node), so it all works on Vercel without the Python service.
+- **End-to-end pipeline** — upload PDF/CSV/Excel → extract → verify → ratios → ML signals → red flags → dashboard → PDF report.
 - **0–100 risk score** mapped to four tiers: Low, Medium, High, Critical.
 - **16+ forensic ratios** with Beneish-style and Altman-style indicators.
 - **XGBoost classifier** with Logistic Regression and Random Forest baselines.
@@ -132,6 +133,17 @@ npm install
 npm run dev                 # development with hot-reload
 npm run build && npm start  # production build
 ```
+
+> **Local build on a synced folder (iCloud/Dropbox/OneDrive):** file-sync daemons
+> can race with Next.js's many small build writes and cause intermittent
+> `ENOENT … _ssgManifest.js` / `pages-manifest.json` errors. This only affects
+> local builds in a synced directory — **Vercel is unaffected**. Work around it by
+> writing the build output outside the synced folder:
+> ```bash
+> NEXT_DIST_DIR=/tmp/ishield_next npm run build
+> NEXT_DIST_DIR=/tmp/ishield_next npm start
+> ```
+> (`next dev` is not affected.)
 
 Frontend env vars (see `.env.example`):
 - `DATABASE_URL` (defaults to `file:./dev.db` SQLite)
@@ -286,7 +298,7 @@ docker run --rm -p 8000:8000 \
 
 - The classifier is trained on **synthetic** Dubai SME data — not real audited filings.
 - Beneish M-Score and Altman Z-Score use private-firm **proxy** formulas.
-- PDF/OCR ingestion is scaffolded but not implemented — the production pipeline expects structured CSV/Excel.
+- PDF extraction reads **text-based** PDFs (digital statements). Scanned/image-only PDFs need OCR, which is not enabled in this MVP — upload those as CSV/Excel, or use a text PDF. Always review the extracted figures in the editable table before analysis.
 - External verification (trade-licence, KYB, registry lookups) is a placeholder weight.
 - The LLM summary depends on the configured model — a thin OpenAI-compatible HTTP call is used to keep the dependency surface small.
 - The dashboard stores the latest analysis in `localStorage` so it survives page refreshes; there is no multi-session history UI in the MVP.

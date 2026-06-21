@@ -1,6 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Allow redirecting the build output dir (e.g. to /tmp) to avoid file-sync
+  // races on synced folders like ~/Desktop. Vercel uses the default `.next`.
+  distDir: process.env.NEXT_DIST_DIR || '.next',
   experimental: {
     serverActions: {
       bodySizeLimit: '10mb',

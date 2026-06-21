@@ -30,6 +30,18 @@ export interface AnalysisRequest {
   records: FinancialRecordInput[];
 }
 
+export interface UploadExtractionResponse {
+  records: FinancialRecordInput[];
+  warnings: string[];
+  extraction: {
+    method: "csv" | "xlsx" | "pdf-llm" | "pdf-heuristic";
+    confidence: "high" | "medium" | "low";
+    pages?: number;
+    detectedCompanyName?: string | null;
+    detectedCurrency?: string | null;
+  };
+}
+
 export interface RedFlag {
   code: string;
   title: string;
