@@ -67,8 +67,8 @@ export default function MethodologyPage() {
             {
               step: "3",
               icon: Brain,
-              title: "AI signals",
-              body: "XGBoost fraud probability, Isolation Forest anomaly score, LLM document consistency review (or rule-based fallback).",
+              title: "AI signals + RLM",
+              body: "XGBoost fraud probability, Isolation Forest anomaly score, and a Recursive Language Model that decomposes the whole filing (notes, MD&A, risk factors) for qualitative red flags.",
             },
             {
               step: "4",
@@ -276,6 +276,46 @@ export default function MethodologyPage() {
                 flags, and asked to produce an investor-grade narrative summary. The fallback
                 generator builds the same structure using the most concerning indicators so the
                 demo works without internet access.
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="lg:col-span-2 border-navy-200 bg-gradient-to-br from-white to-navy-50/40">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Workflow className="h-5 w-5 text-teal-600" />
+                Recursive Language Model (RLM)
+              </CardTitle>
+              <CardDescription>
+                Implemented in <code>src/lib/rlm.ts</code> (and mirrored in the Python service).
+                Runs over the <strong>entire</strong> filing, not the statement window.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                A single LLM call degrades on very long context and can&apos;t fit a 28-page 10-Q.
+                The RLM instead treats the document as something to be recursively decomposed:
+              </p>
+              <ol className="mt-3 grid sm:grid-cols-2 gap-2 text-sm">
+                {[
+                  ["1 · Decompose", "Split the filing into sections — Items, Notes, MD&A, risk factors, statements."],
+                  ["2 · Recurse", "If a section is still too large for one call, split it again (bounded by max depth)."],
+                  ["3 · Analyse", "Each leaf chunk is read by the language model — or a deterministic forensic scanner when no API key is set."],
+                  ["4 · Reduce", "Partial findings are combined bottom-up; when there are too many, they're reduced in batches — recursively — into one synthesis."],
+                ].map(([t, d]) => (
+                  <li key={t} className="flex gap-2 rounded-lg border border-navy-100 bg-white p-3">
+                    <CheckCircle2 className="h-4 w-4 text-teal-600 flex-shrink-0 mt-0.5" />
+                    <span className="text-navy-900">
+                      <strong>{t}.</strong> {d}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+              <p className="mt-3 text-sm text-muted-foreground leading-relaxed">
+                Every node is captured in a trace shown on the dashboard, so the recursion is fully
+                explainable. The qualitative disclosures it surfaces (going concern, restatements,
+                related-party dealings, covenant breaches, auditor changes) feed the document-risk
+                component and adjust the overall score.
               </p>
             </CardContent>
           </Card>

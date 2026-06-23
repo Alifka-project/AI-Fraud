@@ -12,6 +12,7 @@ import {
   Sparkles,
   Building2,
   Pencil,
+  Network,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -56,6 +57,7 @@ export default function UploadPage() {
   const [parsedRecords, setParsedRecords] = useState<FinancialRecordInput[]>([]);
   const [parseWarnings, setParseWarnings] = useState<string[]>([]);
   const [extraction, setExtraction] = useState<ExtractionMeta>(null);
+  const [rlm, setRlm] = useState<UploadExtractionResponse["rlm"]>(undefined);
   const [fileName, setFileName] = useState<string | null>(null);
   const [uploadState, setUploadState] = useState<UploadState>("idle");
   const [progress, setProgress] = useState(0);
@@ -66,6 +68,7 @@ export default function UploadPage() {
     setParsedRecords([]);
     setParseWarnings([]);
     setExtraction(null);
+    setRlm(undefined);
     setFileName(null);
     setUploadState("idle");
     setProgress(0);
@@ -148,6 +151,7 @@ export default function UploadPage() {
       setParsedRecords(payload.records);
       setParseWarnings(payload.warnings ?? []);
       setExtraction(payload.extraction);
+      setRlm(payload.rlm);
       if (!companyName && payload.extraction?.detectedCompanyName) {
         setCompanyName(payload.extraction.detectedCompanyName);
       }
@@ -169,6 +173,7 @@ export default function UploadPage() {
     setParsedRecords(s.payload.records);
     setParseWarnings([]);
     setExtraction(null);
+    setRlm(undefined);
     setFileName(`${s.id}.sample`);
     setUploadState("uploaded");
     setError(null);
@@ -198,6 +203,7 @@ export default function UploadPage() {
         currency: extraction?.detectedCurrency || undefined,
       },
       records: parsedRecords,
+      rlm,
     };
 
     try {
@@ -300,7 +306,7 @@ export default function UploadPage() {
                     <Loader2 className="h-10 w-10 text-teal-600 mx-auto animate-spin" />
                     <p className="font-semibold text-navy-900">
                       {isPdfExtraction || fileName?.toLowerCase().endsWith(".pdf")
-                        ? "Reading PDF and extracting figures…"
+                        ? "Reading PDF, extracting figures & recursively reviewing the document…"
                         : "Parsing file…"}
                     </p>
                     <p className="text-xs text-muted-foreground">{fileName}</p>
@@ -331,6 +337,14 @@ export default function UploadPage() {
                           {extraction.pages ? ` · ${extraction.pages} page${extraction.pages === 1 ? "" : "s"}` : ""}
                         </span>
                       </div>
+                    ) : null}
+                    {rlm ? (
+                      <p className="text-xs text-teal-700">
+                        <Network className="inline h-3.5 w-3.5 -mt-0.5 mr-1" />
+                        Recursive review: {rlm.trace.sectionsAnalyzed} sections ·{" "}
+                        {rlm.qualitativeFlags.length} qualitative flag
+                        {rlm.qualitativeFlags.length === 1 ? "" : "s"}
+                      </p>
                     ) : null}
                     <Button variant="outline" size="sm" onClick={resetUpload}>
                       Choose a different file

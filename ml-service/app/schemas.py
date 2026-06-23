@@ -100,6 +100,47 @@ class ModelInfo(CamelModel):
     explainability: str
 
 
+class RlmNode(CamelModel):
+    id: str
+    parent_id: Optional[str] = None
+    depth: int
+    kind: Literal["root", "section", "chunk", "reduce"]
+    label: str
+    chars: int
+    digest: Optional[str] = None
+
+
+class RlmTrace(CamelModel):
+    provider: str
+    total_calls: int
+    max_depth: int
+    sections_analyzed: int
+    chars_processed: int
+    llm_calls: int
+    nodes: List[RlmNode]
+
+
+class RlmQualitativeFlag(CamelModel):
+    code: str
+    title: str
+    severity: Literal["low", "medium", "high", "critical"]
+    section: str
+    evidence: str
+
+
+class RlmSectionDigest(CamelModel):
+    section: str
+    digest: str
+
+
+class RlmResult(CamelModel):
+    summary: str
+    qualitative_flags: List[RlmQualitativeFlag]
+    section_digests: List[RlmSectionDigest]
+    document_risk_score: float
+    trace: RlmTrace
+
+
 class RiskAssessmentResult(CamelModel):
     overall_score: float
     risk_level: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
@@ -114,3 +155,4 @@ class RiskAssessmentResult(CamelModel):
     records: List[FinancialRecordInput]
     generated_at: str
     model_info: ModelInfo
+    rlm: Optional[RlmResult] = None

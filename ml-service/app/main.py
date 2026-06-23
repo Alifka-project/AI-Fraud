@@ -109,15 +109,17 @@ async def upload_analyze(
 
     detected_company: Optional[str] = None
     detected_currency: Optional[str] = None
+    pdf_full_text: str = ""
 
     # PDF path: extract figures (LLM or heuristic) into record dicts.
     if filename.endswith(".pdf"):
-        from .pdf_extract import extract_financials_from_pdf
+        from .pdf_extract import extract_financials_from_pdf, extract_pdf_text
 
         try:
             pdf_records, _warnings, _method, detected_company, detected_currency = (
                 extract_financials_from_pdf(raw)
             )
+            pdf_full_text, _ = extract_pdf_text(raw)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=f"Could not parse PDF: {exc}")
         if not pdf_records:
@@ -153,7 +155,18 @@ async def upload_analyze(
     )
 
     records = [FinancialRecordInput(**row) for row in record_dicts]
-    return run_analysis(AnalysisRequest(company=company_meta, records=records))
+    result = run_analysis(AnalysisRequest(company=company_meta, records=records))
+
+    # Recursive Language Model document review over the full filing text.
+    if pdf_full_text and len(pdf_full_text.strip()) > 1200:
+        try:
+            from .rlm import merge_rlm_into_result, run_recursive_diligence
+
+            result = merge_rlm_into_result(result, run_recursive_diligence(pdf_full_text))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARN] RLM document review failed (non-fatal): {exc}")
+
+    return result
 
 
 @app.post("/generate-report")

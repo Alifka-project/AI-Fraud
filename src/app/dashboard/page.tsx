@@ -11,6 +11,7 @@ import { ComponentScores } from "@/components/dashboard/component-scores";
 import { RatiosTable } from "@/components/dashboard/ratios-table";
 import { RedFlagList } from "@/components/dashboard/red-flag-list";
 import { FeatureImportanceChart } from "@/components/dashboard/feature-importance";
+import { RlmPanel } from "@/components/dashboard/rlm-panel";
 import {
   RevenueIncomeChart,
   BalanceSheetChart,
@@ -238,6 +239,9 @@ export default function DashboardPage() {
           <RedFlagList flags={result.redFlags} />
         </CardContent>
       </Card>
+
+      {/* Recursive Language Model document intelligence */}
+      {result.rlm ? <RlmPanel rlm={result.rlm} /> : null}
 
       {/* LLM Summary */}
       <Card className="border-teal-200 bg-gradient-to-br from-white to-teal-50/40">

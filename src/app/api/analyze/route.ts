@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { callMlService } from "@/lib/ml-client";
+import { mergeRlmIntoResult } from "@/lib/rlm";
 import type { AnalysisRequest } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -30,5 +31,9 @@ export async function POST(req: Request) {
   }
 
   const result = await callMlService(payload);
-  return NextResponse.json(result);
+
+  // If the upload step produced a Recursive Language Model document review,
+  // fold its qualitative findings into the quantitative assessment.
+  const finalResult = payload.rlm ? mergeRlmIntoResult(result, payload.rlm) : result;
+  return NextResponse.json(finalResult);
 }

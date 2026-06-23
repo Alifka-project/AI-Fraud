@@ -3,6 +3,7 @@ import { parseFinancialsCsv } from "@/lib/csv-parser";
 import { parseXlsxBuffer } from "@/lib/xlsx-parser";
 import { extractPdfText } from "@/lib/pdf-extract";
 import { extractFinancialsFromText } from "@/lib/financial-extractor";
+import { runRecursiveDiligence } from "@/lib/rlm";
 import type { UploadExtractionResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -97,6 +98,19 @@ export async function POST(req: Request) {
           { status: 422 }
         );
       }
+
+      // Recursive Language Model pass: decompose the WHOLE filing (notes, MD&A,
+      // risk factors, legal proceedings) and surface qualitative red flags the
+      // numbers-only extraction can't see. Best-effort — never blocks the upload.
+      let rlm: UploadExtractionResponse["rlm"];
+      try {
+        if (text.trim().length > 1200) {
+          rlm = await runRecursiveDiligence(text);
+        }
+      } catch (err) {
+        console.warn("RLM document review failed (non-fatal):", err);
+      }
+
       const body: UploadExtractionResponse = {
         records: result.records,
         warnings: result.warnings,
@@ -107,6 +121,7 @@ export async function POST(req: Request) {
           detectedCompanyName: result.companyName,
           detectedCurrency: result.currency,
         },
+        rlm,
       };
       return NextResponse.json(body);
     }

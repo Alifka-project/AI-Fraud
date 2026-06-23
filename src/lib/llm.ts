@@ -20,6 +20,55 @@ export function hasLlmKey(): boolean {
   return Boolean((process.env.OPENAI_API_KEY ?? "").trim());
 }
 
+export function llmModelName(): string {
+  return DEFAULT_MODEL;
+}
+
+interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+/**
+ * Low-level OpenAI-compatible chat call shared by the LLM summary, the
+ * financial extractor, and the Recursive Language Model engine. Returns the
+ * assistant message content, or null when no key is set or the call fails.
+ */
+export async function callOpenAIChat(
+  messages: ChatMessage[],
+  opts: { json?: boolean; maxTokens?: number; temperature?: number; timeoutMs?: number } = {}
+): Promise<string | null> {
+  const apiKey = (process.env.OPENAI_API_KEY ?? "").trim();
+  if (!apiKey) return null;
+  try {
+    const res = await fetch(`${DEFAULT_BASE.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: DEFAULT_MODEL,
+        messages,
+        temperature: opts.temperature ?? 0.2,
+        max_tokens: opts.maxTokens ?? 700,
+        ...(opts.json ? { response_format: { type: "json_object" } } : {}),
+      }),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 25000),
+    });
+    if (!res.ok) {
+      console.warn(`callOpenAIChat ${res.status}: ${await res.text()}`);
+      return null;
+    }
+    const data = await res.json();
+    const content: string | undefined = data?.choices?.[0]?.message?.content;
+    return content ? content.trim() : null;
+  } catch (err) {
+    console.warn("callOpenAIChat failed:", err);
+    return null;
+  }
+}
+
 interface LlmInput {
   company: CompanyMetadata;
   overallScore: number;

@@ -29,6 +29,7 @@ export interface CompanyMetadata {
 export interface AnalysisRequest {
   company: CompanyMetadata;
   records: FinancialRecordInput[];
+  rlm?: RlmResult;
 }
 
 export interface UploadExtractionResponse {
@@ -41,6 +42,59 @@ export interface UploadExtractionResponse {
     detectedCompanyName?: string | null;
     detectedCurrency?: string | null;
   };
+  rlm?: RlmResult;
+}
+
+// ---------------------------------------------------------------------------
+// Recursive Language Model (RLM) types.
+//
+// The RLM recursively decomposes a full filing into sections, analyses each
+// (recursing further when a section is itself too large), then recursively
+// reduces the partial findings into a single due-diligence synthesis. The
+// trace exposes the recursion for explainability.
+// ---------------------------------------------------------------------------
+
+export type RlmNodeKind = "root" | "section" | "chunk" | "reduce";
+
+export interface RlmNode {
+  id: string;
+  parentId: string | null;
+  depth: number;
+  kind: RlmNodeKind;
+  label: string;
+  chars: number;
+  digest?: string;
+}
+
+export interface RlmTrace {
+  provider: string;
+  totalCalls: number;
+  maxDepth: number;
+  sectionsAnalyzed: number;
+  charsProcessed: number;
+  llmCalls: number;
+  nodes: RlmNode[];
+}
+
+export interface RlmQualitativeFlag {
+  code: string;
+  title: string;
+  severity: "low" | "medium" | "high" | "critical";
+  section: string;
+  evidence: string;
+}
+
+export interface RlmSectionDigest {
+  section: string;
+  digest: string;
+}
+
+export interface RlmResult {
+  summary: string;
+  qualitativeFlags: RlmQualitativeFlag[];
+  sectionDigests: RlmSectionDigest[];
+  documentRiskScore: number; // 0-100 derived from qualitative findings
+  trace: RlmTrace;
 }
 
 export interface RedFlag {
@@ -104,4 +158,5 @@ export interface RiskAssessmentResult {
     llmProvider: string;
     explainability: string;
   };
+  rlm?: RlmResult;
 }
