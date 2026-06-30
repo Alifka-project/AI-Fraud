@@ -45,6 +45,14 @@ const METHOD_LABELS: Record<string, string> = {
   "pdf-vision": "PDF · vision OCR",
 };
 
+// PDFs larger than this are extracted to text in the browser (sent as JSON) to
+// stay under Vercel's ~4.5 MB serverless request-body limit. Smaller files go
+// to the server as a raw file for the full pipeline (incl. vision OCR).
+const LARGE_PDF_THRESHOLD = 4 * 1024 * 1024; // 4 MB
+// Upper bound enforced in the browser so an enormous file can't hang the tab
+// during in-browser text extraction. Matches the server's 25 MB ceiling.
+const MAX_CLIENT_BYTES = 26 * 1024 * 1024; // ~25 MB
+
 export default function UploadPage() {
   const router = useRouter();
   const { setResult } = useAnalysis();
@@ -91,7 +99,15 @@ export default function UploadPage() {
       return;
     }
 
-    // CSV is parsed instantly in the browser; Excel/PDF go to the server route.
+    if (file.size > MAX_CLIENT_BYTES) {
+      setError(
+        "File too large (max 25 MB). Please upload only the financial-statement pages, or a CSV/Excel file."
+      );
+      setUploadState("error");
+      return;
+    }
+
+    // CSV is parsed instantly in the browser.
     if (isCsv) {
       setUploadState("parsing");
       setProgress(30);
@@ -118,37 +134,38 @@ export default function UploadPage() {
       return;
     }
 
-    void handleServerParse(file, isPdf);
+    // Large PDFs are extracted to text IN THE BROWSER and sent as JSON, so the
+    // multi-megabyte file never hits Vercel's ~4.5 MB request-body limit.
+    if (isPdf && file.size > LARGE_PDF_THRESHOLD) {
+      void handleLargePdf(file);
+      return;
+    }
+
+    // Small PDFs and Excel go to the server as a raw file (full pipeline,
+    // including vision/OCR escalation for scanned PDFs).
+    handleServerParse(file, isPdf);
   }
 
-  async function handleServerParse(file: File, isPdf: boolean) {
+  // Shared handling of an /api/upload response (identical shape for the
+  // multipart and the JSON request paths).
+  async function applyUploadResponse(makeRequest: () => Promise<Response>) {
     setUploadState("parsing");
-    setProgress(isPdf ? 20 : 40);
+    setProgress((p) => (p < 20 ? 20 : p));
     // Animate progress while the server works (PDF + LLM can take a few seconds).
     const tick = setInterval(() => {
       setProgress((p) => (p < 85 ? p + 4 : p));
     }, 250);
-
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append(
-        "company",
-        JSON.stringify({ name: companyName || file.name.replace(/\.[^.]+$/, "") })
-      );
-      const res = await fetch("/api/upload", { method: "POST", body: formData });
+      const res = await makeRequest();
       clearInterval(tick);
-
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data?.error || data?.detail || `Server returned ${res.status}`);
       }
-
       const payload = data as UploadExtractionResponse;
       if (!payload.records || payload.records.length === 0) {
         throw new Error("No financial records could be extracted from the file.");
       }
-
       setParsedRecords(payload.records);
       setParseWarnings(payload.warnings ?? []);
       setExtraction(payload.extraction);
@@ -163,6 +180,55 @@ export default function UploadPage() {
       setError(err instanceof Error ? err.message : "Failed to parse the file.");
       setUploadState("error");
     }
+  }
+
+  function handleServerParse(file: File, isPdf: boolean) {
+    setProgress(isPdf ? 20 : 40);
+    void applyUploadResponse(() => {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append(
+        "company",
+        JSON.stringify({ name: companyName || file.name.replace(/\.[^.]+$/, "") })
+      );
+      return fetch("/api/upload", { method: "POST", body: formData });
+    });
+  }
+
+  // Browser-side text extraction for large PDFs (reuses the exact extractor the
+  // server uses; dynamic import keeps pdf.js out of the initial page bundle).
+  async function handleLargePdf(file: File) {
+    setUploadState("parsing");
+    setProgress(12);
+    let pageTexts: string[] = [];
+    let pages = 0;
+    try {
+      const { extractPdfText } = await import("@/lib/pdf-extract");
+      const result = await extractPdfText(await file.arrayBuffer());
+      pageTexts = result.pageTexts;
+      pages = result.pages;
+    } catch {
+      setError(
+        "Could not read this PDF in your browser. Please try a smaller file, or upload a CSV/Excel."
+      );
+      setUploadState("error");
+      return;
+    }
+    const totalChars = pageTexts.reduce((n, p) => n + (p?.length ?? 0), 0);
+    if (totalChars < 1000) {
+      setError(
+        "This looks like a scanned PDF (no selectable text) larger than 4 MB. Upload only the statement pages (under 4 MB) to use OCR, or upload a CSV/Excel file."
+      );
+      setUploadState("error");
+      return;
+    }
+    void applyUploadResponse(() =>
+      fetch("/api/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pageTexts, pages, fileName: file.name }),
+      })
+    );
   }
 
   function loadSample(s: SampleCompany) {
@@ -378,7 +444,7 @@ export default function UploadPage() {
                       Drag &amp; drop a PDF, Excel, or CSV — or click to browse
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      PDF · XLSX · XLS · CSV · up to 15 MB
+                      PDF · XLSX · XLS · CSV · up to 25 MB · large PDFs are read in your browser
                     </p>
                     <div className="flex items-center justify-center gap-3">
                       <Button onClick={() => fileInputRef.current?.click()} variant="primary">
