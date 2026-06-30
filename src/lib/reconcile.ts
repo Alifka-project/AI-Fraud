@@ -89,13 +89,36 @@ export function reconcileRecords(records: FinancialRecordInput[]): Reconciliatio
       issues.push({ year: r.year, field: "debt", severity: "warn", message: `Debt (${r.debt.toLocaleString()}) exceeds total liabilities (${r.totalLiabilities.toLocaleString()}).` });
     }
 
-    // 6. Completeness: the core fields should be present.
-    const missing = (["revenue", "totalAssets", "totalLiabilities", "equity"] as const).filter(
-      (f) => !r[f]
-    );
-    if (missing.length) {
-      penalty += 0.05 * missing.length;
-      issues.push({ year: r.year, field: missing.join(","), severity: "warn", message: `Missing core figures: ${missing.join(", ")}.` });
+    // 6. Completeness — heavily penalised. A mostly-empty record means the
+    //    extraction failed and should escalate to vision OCR rather than be
+    //    presented as a valid (but all-zero) result.
+    const coreFields = ["revenue", "totalAssets", "totalLiabilities", "equity", "netIncome"] as const;
+    const present = coreFields.filter((f) => Math.abs(r[f]) > 0).length;
+    if (present === 0) {
+      penalty += 0.95;
+      issues.push({
+        year: r.year,
+        field: "all",
+        severity: "error",
+        message: "No financial figures were detected for this period — extraction failed.",
+      });
+    } else if (present <= 2) {
+      penalty += 0.4;
+      issues.push({
+        year: r.year,
+        field: "core",
+        severity: "warn",
+        message: `Only ${present} of 5 core figures detected — extraction may be incomplete.`,
+      });
+    } else if (present < 5) {
+      penalty += 0.05 * (5 - present);
+      const missing = coreFields.filter((f) => !Math.abs(r[f]));
+      issues.push({
+        year: r.year,
+        field: missing.join(","),
+        severity: "warn",
+        message: `Missing core figures: ${missing.join(", ")}.`,
+      });
     }
   }
 

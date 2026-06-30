@@ -65,20 +65,25 @@ export async function callOpenAIChat(
 
   const retries = opts.retries ?? 2;
   const url = `${DEFAULT_BASE.replace(/\/$/, "")}/chat/completions`;
-  const body = JSON.stringify({
-    model: opts.model || DEFAULT_MODEL,
-    messages,
-    temperature: opts.temperature ?? 0.2,
-    max_tokens: opts.maxTokens ?? 700,
-    ...(opts.json ? { response_format: { type: "json_object" } } : {}),
-  });
+  // Some models / OpenAI-compatible endpoints reject response_format json_object.
+  // Drop it on a 400 and rely on parseLlmJson instead.
+  let useJson = Boolean(opts.json);
+
+  const buildBody = () =>
+    JSON.stringify({
+      model: opts.model || DEFAULT_MODEL,
+      messages,
+      temperature: opts.temperature ?? 0.2,
+      max_tokens: opts.maxTokens ?? 700,
+      ...(useJson ? { response_format: { type: "json_object" } } : {}),
+    });
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const res = await fetch(url, {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body,
+        body: buildBody(),
         signal: AbortSignal.timeout(opts.timeoutMs ?? 30000),
       });
       if (res.ok) {
@@ -86,16 +91,21 @@ export async function callOpenAIChat(
         const content: string | undefined = data?.choices?.[0]?.message?.content;
         return content ? content.trim() : null;
       }
-      // Retry on rate-limit / server errors; give up on other 4xx.
+      const detail = await res.text();
+      // Retry on rate-limit / server errors with backoff.
       if (res.status === 429 || res.status >= 500) {
-        const detail = await res.text();
         console.warn(`callOpenAIChat ${res.status} (attempt ${attempt + 1}): ${detail.slice(0, 160)}`);
         if (attempt < retries) {
           await sleep(500 * 2 ** attempt + Math.floor(Math.random() * 250));
           continue;
         }
+      } else if (res.status === 400 && useJson && /response_format|json/i.test(detail)) {
+        // Model doesn't support JSON mode — retry without it (same attempt budget).
+        console.warn("callOpenAIChat: model rejected json mode, retrying without response_format.");
+        useJson = false;
+        continue;
       } else {
-        console.warn(`callOpenAIChat ${res.status}: ${(await res.text()).slice(0, 200)}`);
+        console.warn(`callOpenAIChat ${res.status}: ${detail.slice(0, 200)}`);
       }
       return null;
     } catch (err) {

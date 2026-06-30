@@ -119,18 +119,24 @@ export async function POST(req: Request) {
 
       let recon = reconcileRecords(records);
 
-      // 2. Escalate to vision/OCR when the text path produced nothing or
-      //    low-confidence figures (scanned image, or a layout the text parser
-      //    misread). OpenAI reads the PDF natively (rasterise + OCR).
-      const scannedOrWeak = records.length === 0 || recon.confidence < 0.7;
-      if (scannedOrWeak && visionAvailable()) {
+      // A record set where every period is missing the fundamental figures
+      // means the text parse essentially failed (scanned image, unusual layout,
+      // or a non-statement page) — even if it nominally produced a row.
+      const coreEmpty = (recs: FinancialRecordInput[]) =>
+        recs.length === 0 || recs.every((r) => !r.revenue && !r.totalAssets && !r.netIncome);
+
+      // 2. Escalate to vision/OCR when the text path produced nothing, an
+      //    all-zero skeleton, or low-confidence figures. OpenAI reads the PDF
+      //    natively (rasterise + OCR) — the most accurate path.
+      const weak = coreEmpty(records) || recon.confidence < 0.8;
+      if (weak && visionAvailable()) {
         try {
           const vision = await extractFinancialsWithVision(buffer);
-          if (vision && vision.records.length > 0) {
+          if (vision && vision.records.length > 0 && !coreEmpty(vision.records)) {
             const visionRecon = reconcileRecords(vision.records);
-            // Adopt the vision result if there were no text records or vision
+            // Adopt vision when the text path was empty/all-zero, or vision
             // reconciles at least as well.
-            if (records.length === 0 || visionRecon.confidence >= recon.confidence) {
+            if (coreEmpty(records) || visionRecon.confidence >= recon.confidence) {
               records = vision.records;
               recon = visionRecon;
               method = "pdf-vision";
@@ -148,12 +154,16 @@ export async function POST(req: Request) {
         }
       }
 
-      if (records.length === 0) {
+      // 3. If extraction still produced nothing usable, fail clearly rather
+      //    than presenting an all-zero table as if it were real data.
+      if (coreEmpty(records)) {
+        const reason = visionAvailable()
+          ? "We could not read the financial figures from this PDF, even with OCR. It may be a non-standard layout or a low-quality scan."
+          : "We could not read the figures from this PDF. Configure an OpenAI API key to enable AI + OCR extraction, or upload a CSV/Excel file.";
         return NextResponse.json(
           {
-            error:
-              "Could not extract financial figures from this PDF. If it is a scanned image, ensure an OpenAI key is configured for OCR, or upload a CSV/Excel file.",
-            extraction: { method, confidence, pages },
+            error: `${reason} You can also enter the figures manually using the CSV template.`,
+            extraction: { method, confidence: "low", pages },
           },
           { status: 422 }
         );
