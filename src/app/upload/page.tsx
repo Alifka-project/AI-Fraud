@@ -42,6 +42,7 @@ const METHOD_LABELS: Record<string, string> = {
   xlsx: "Excel parsed",
   "pdf-llm": "PDF · AI extraction",
   "pdf-heuristic": "PDF · rule-based extraction",
+  "pdf-vision": "PDF · vision OCR",
 };
 
 export default function UploadPage() {
@@ -337,6 +338,23 @@ export default function UploadPage() {
                           {extraction.pages ? ` · ${extraction.pages} page${extraction.pages === 1 ? "" : "s"}` : ""}
                         </span>
                       </div>
+                    ) : null}
+                    {typeof extraction?.reconciliationConfidence === "number" ? (
+                      <p
+                        className={
+                          extraction.reconciliationConfidence >= 0.8
+                            ? "text-xs text-emerald-700"
+                            : extraction.reconciliationConfidence >= 0.5
+                              ? "text-xs text-amber-700"
+                              : "text-xs text-red-700"
+                        }
+                      >
+                        Consistency check:{" "}
+                        {Math.round(extraction.reconciliationConfidence * 100)}%
+                        {extraction.reconciliationConfidence >= 0.8
+                          ? " · figures reconcile"
+                          : " · review highlighted values"}
+                      </p>
                     ) : null}
                     {rlm ? (
                       <p className="text-xs text-teal-700">

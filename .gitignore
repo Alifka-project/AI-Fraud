@@ -37,6 +37,10 @@ prisma/dev.db-journal
 .DS_Store
 Thumbs.db
 
+# Local presentation / office temp files (not part of the app)
+*.pptx
+~$*
+
 # Logs
 *.log
 npm-debug.log*

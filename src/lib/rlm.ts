@@ -20,7 +20,7 @@
 // deterministic path always produces a usable result.
 // ---------------------------------------------------------------------------
 
-import { callOpenAIChat, hasLlmKey, llmModelName } from "./llm";
+import { callOpenAIChat, hasLlmKey, llmModelName, parseLlmJson } from "./llm";
 import { riskLevelFromScore } from "./utils";
 import type {
   RedFlag,
@@ -304,30 +304,26 @@ async function llmLeaf(text: string, label: string, state: RunState): Promise<Fi
     ],
     { json: true, maxTokens: 600, temperature: 0 }
   );
-  if (!content) return null;
-  try {
-    const parsed = JSON.parse(content) as {
-      flags?: Array<{ code?: string; title?: string; severity?: string; evidence?: string }>;
-      digest?: string;
-    };
-    const flags: RlmQualitativeFlag[] = (parsed.flags ?? [])
-      .filter((f) => f && (f.title || f.code))
-      .map((f) => ({
-        code: (f.code || f.title || "DOC_FLAG").toUpperCase().replace(/[^A-Z0-9]+/g, "_").slice(0, 40),
-        title: (f.title || f.code || "Document flag").slice(0, 120),
-        severity: (["low", "medium", "high", "critical"].includes(String(f.severity))
-          ? f.severity
-          : "medium") as Severity,
-        section: label,
-        evidence: (f.evidence || "").replace(/\s+/g, " ").trim().slice(0, 240),
-      }));
-    const digest = (parsed.digest || (flags.length ? flags[0].title : "No notable risk language."))
-      .toString()
-      .slice(0, 220);
-    return { flags, digest, sectionDigests: [{ section: label, digest }] };
-  } catch {
-    return null;
-  }
+  const parsed = parseLlmJson<{
+    flags?: Array<{ code?: string; title?: string; severity?: string; evidence?: string }>;
+    digest?: string;
+  }>(content);
+  if (!parsed) return null;
+  const flags: RlmQualitativeFlag[] = (parsed.flags ?? [])
+    .filter((f) => f && (f.title || f.code))
+    .map((f) => ({
+      code: (f.code || f.title || "DOC_FLAG").toUpperCase().replace(/[^A-Z0-9]+/g, "_").slice(0, 40),
+      title: (f.title || f.code || "Document flag").slice(0, 120),
+      severity: (["low", "medium", "high", "critical"].includes(String(f.severity))
+        ? f.severity
+        : "medium") as Severity,
+      section: label,
+      evidence: (f.evidence || "").replace(/\s+/g, " ").trim().slice(0, 240),
+    }));
+  const digest = (parsed.digest || (flags.length ? flags[0].title : "No notable risk language."))
+    .toString()
+    .slice(0, 220);
+  return { flags, digest, sectionDigests: [{ section: label, digest }] };
 }
 
 async function analyzeLeaf(text: string, label: string, state: RunState): Promise<Findings> {

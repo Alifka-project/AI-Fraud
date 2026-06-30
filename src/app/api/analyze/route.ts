@@ -1,39 +1,37 @@
 import { NextResponse } from "next/server";
 import { callMlService } from "@/lib/ml-client";
 import { mergeRlmIntoResult } from "@/lib/rlm";
-import type { AnalysisRequest } from "@/lib/types";
+import { validateAnalysisRequest } from "@/lib/validate";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 export async function POST(req: Request) {
-  let payload: AnalysisRequest;
+  let raw: unknown;
   try {
-    payload = (await req.json()) as AnalysisRequest;
+    raw = await req.json();
   } catch {
-    return NextResponse.json(
-      { error: "Invalid JSON body" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  if (!payload?.company?.name) {
+  const validation = validateAnalysisRequest(raw);
+  if (!validation.ok) {
+    return NextResponse.json({ error: validation.error }, { status: 400 });
+  }
+  const payload = validation.value;
+
+  try {
+    const result = await callMlService(payload);
+    // Fold the Recursive Language Model document review (produced at upload)
+    // into the quantitative assessment.
+    const finalResult = payload.rlm ? mergeRlmIntoResult(result, payload.rlm) : result;
+    return NextResponse.json(finalResult);
+  } catch (err) {
+    console.error("Analysis failed:", err);
     return NextResponse.json(
-      { error: "company.name is required" },
-      { status: 400 }
+      { error: "Analysis failed. Please try again." },
+      { status: 500 }
     );
   }
-  if (!Array.isArray(payload.records) || payload.records.length === 0) {
-    return NextResponse.json(
-      { error: "records[] must contain at least one financial year" },
-      { status: 400 }
-    );
-  }
-
-  const result = await callMlService(payload);
-
-  // If the upload step produced a Recursive Language Model document review,
-  // fold its qualitative findings into the quantitative assessment.
-  const finalResult = payload.rlm ? mergeRlmIntoResult(result, payload.rlm) : result;
-  return NextResponse.json(finalResult);
 }

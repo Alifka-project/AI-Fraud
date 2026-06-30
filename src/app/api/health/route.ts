@@ -17,6 +17,15 @@ export async function GET() {
         : "unreachable (using TypeScript fallback engine)",
     fallbackEngine: "available",
     openaiKey: openaiConfigured ? "configured" : "not configured (rule-based summary)",
+    capabilities: {
+      pdfTextExtraction: true,
+      pdfVisionOcr: openaiConfigured, // scanned-PDF OCR needs the OpenAI key
+      excel: true,
+      csv: true,
+      llmExtraction: openaiConfigured,
+      recursiveLanguageModel: true,
+      reconciliation: true,
+    },
     deployedAt: new Date().toISOString(),
   });
 }

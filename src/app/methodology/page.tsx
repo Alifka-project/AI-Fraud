@@ -369,7 +369,7 @@ export default function MethodologyPage() {
             {[
               "ML model is trained on synthetically generated Dubai SME profiles, not real audited data.",
               "Beneish M-score and Altman Z-score use proxy formulas — public-firm variables are partially substituted with private-firm equivalents.",
-              "PDF ingestion reads text-based statements (AI extraction with a rule-based fallback); scanned image-only PDFs require OCR, which is not yet enabled — use CSV/Excel for those.",
+              "PDF ingestion reads text-based statements (AI extraction with a rule-based fallback) and falls back to vision OCR for scanned/image-only PDFs when an OpenAI key is configured. Every extraction is reconciled against accounting identities (assets = liabilities + equity) and shown with a confidence score.",
               "LLM narrative depends on prompt and model quality; the rule-based fallback ensures the demo works offline.",
               "External verification (trade licence, KYB) is currently a placeholder weight — integrations are out of scope for the MVP.",
               "Risk score is informational; it must not be used as the sole input to any investment, lending, or procurement decision.",

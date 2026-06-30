@@ -363,13 +363,99 @@ def llm_extract(text: str) -> Optional[Tuple[List[Dict], Optional[str], Optional
     return records, parsed.get("companyName"), parsed.get("currency"), notes
 
 
+def vision_extract(raw: bytes) -> Optional[Tuple[List[Dict], Optional[str], Optional[str], List[str]]]:
+    """Send the PDF directly to an OpenAI vision model (native PDF input → OCR).
+    Works for scanned / image-only PDFs without a local Tesseract dependency."""
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return None
+    if len(raw) > 8 * 1024 * 1024:
+        return None
+
+    import base64
+
+    base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+    model = os.environ.get("OPENAI_VISION_MODEL") or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    data_url = "data:application/pdf;base64," + base64.b64encode(raw).decode()
+
+    instruction = (
+        "You are a precise financial-statement data-extraction engine reading a company filing "
+        "(it may be a scanned image). Read the income statement, balance sheet, and cash-flow "
+        "statement. Output ABSOLUTE units ('in millions' => x1,000,000; 'in thousands' => x1,000; "
+        "'except shares in thousands' applies only to share counts). Parentheses are negative. "
+        'Return STRICT JSON {"companyName": string|null, "currency": string|null, "records": '
+        '[{"year": number, "revenue": number, "net_income": number, "total_assets": number, '
+        '"total_liabilities": number, "equity": number, "cash": number, "operating_cash_flow": '
+        'number, "receivables": number, "debt": number, "cost_of_goods_sold": number, "expenses": '
+        'number}], "notes": string[]}. One record per reporting period (max 2 most recent); year = '
+        "period-end year. Use TOTAL lines. debt = sum of all borrowings. Balance sheet must satisfy "
+        "assets = liabilities + equity."
+    )
+
+    try:
+        with httpx.Client(timeout=90.0) as client:
+            res = client.post(
+                f"{base}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": instruction},
+                            {"type": "file", "file": {"filename": "filing.pdf", "file_data": data_url}},
+                        ],
+                    }],
+                    "temperature": 0,
+                    "max_tokens": 1600,
+                    "response_format": {"type": "json_object"},
+                },
+            )
+            res.raise_for_status()
+            parsed = json.loads(res.json()["choices"][0]["message"]["content"])
+    except Exception as exc:  # noqa: BLE001
+        print(f"[WARN] Vision extraction failed: {exc}")
+        return None
+
+    records: List[Dict] = []
+    for item in parsed.get("records", []):
+        try:
+            year = int(round(float(item.get("year", 0))))
+        except (TypeError, ValueError):
+            continue
+        if not (1990 <= year <= 2100):
+            continue
+        rec = {"year": year}
+        for f in NUMERIC_FIELDS:
+            try:
+                rec[f] = float(item.get(f, 0) or 0)
+            except (TypeError, ValueError):
+                rec[f] = 0.0
+        rec["cost_of_goods_sold"] = abs(rec["cost_of_goods_sold"])
+        rec["expenses"] = abs(rec["expenses"])
+        records.append(rec)
+    if not records:
+        return None
+    notes = parsed.get("notes", []) if isinstance(parsed.get("notes"), list) else []
+    return records, parsed.get("companyName"), parsed.get("currency"), notes
+
+
 def extract_financials_from_pdf(
     raw: bytes,
 ) -> Tuple[List[Dict], List[str], str, Optional[str], Optional[str]]:
     """Return (records, warnings, method, detected_company_name, currency)."""
     text, _pages = extract_pdf_text(raw)
+
+    # Scanned / image-only PDF (no text layer) → vision OCR.
     if not text.strip():
-        return [], ["No text layer found (scanned image?). OCR is not enabled."], "pdf-empty", None, None
+        vision = vision_extract(raw)
+        if vision is not None:
+            records, company, currency, notes = vision
+            return records, [
+                "Figures read directly from the PDF by the vision model (OCR). Verify against the source.",
+                *notes,
+            ], "pdf-vision", company, currency
+        return [], ["No text layer found (scanned image). Configure OPENAI_API_KEY for OCR."], "pdf-empty", None, None
 
     window = _select_statement_window(text, 15000)
     llm = llm_extract(window)

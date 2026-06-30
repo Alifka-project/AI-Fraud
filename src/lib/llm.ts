@@ -24,49 +24,122 @@ export function llmModelName(): string {
   return DEFAULT_MODEL;
 }
 
+// OpenAI message content can be a plain string or multimodal parts (text +
+// file/image), which we use for native PDF vision extraction.
+type ChatContent =
+  | string
+  | Array<
+      | { type: "text"; text: string }
+      | { type: "file"; file: { filename: string; file_data: string } }
+      | { type: "image_url"; image_url: { url: string } }
+    >;
+
 interface ChatMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: ChatContent;
 }
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Low-level OpenAI-compatible chat call shared by the LLM summary, the
- * financial extractor, and the Recursive Language Model engine. Returns the
- * assistant message content, or null when no key is set or the call fails.
+ * financial extractor, the vision extractor, and the RLM engine.
+ *
+ * Production-hardened: retries on transient failures (429 / 5xx / timeouts)
+ * with exponential backoff. Returns the assistant content, or null when no key
+ * is set or all attempts fail.
  */
 export async function callOpenAIChat(
   messages: ChatMessage[],
-  opts: { json?: boolean; maxTokens?: number; temperature?: number; timeoutMs?: number } = {}
+  opts: {
+    json?: boolean;
+    maxTokens?: number;
+    temperature?: number;
+    timeoutMs?: number;
+    model?: string;
+    retries?: number;
+  } = {}
 ): Promise<string | null> {
   const apiKey = (process.env.OPENAI_API_KEY ?? "").trim();
   if (!apiKey) return null;
-  try {
-    const res = await fetch(`${DEFAULT_BASE.replace(/\/$/, "")}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: DEFAULT_MODEL,
-        messages,
-        temperature: opts.temperature ?? 0.2,
-        max_tokens: opts.maxTokens ?? 700,
-        ...(opts.json ? { response_format: { type: "json_object" } } : {}),
-      }),
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 25000),
-    });
-    if (!res.ok) {
-      console.warn(`callOpenAIChat ${res.status}: ${await res.text()}`);
+
+  const retries = opts.retries ?? 2;
+  const url = `${DEFAULT_BASE.replace(/\/$/, "")}/chat/completions`;
+  const body = JSON.stringify({
+    model: opts.model || DEFAULT_MODEL,
+    messages,
+    temperature: opts.temperature ?? 0.2,
+    max_tokens: opts.maxTokens ?? 700,
+    ...(opts.json ? { response_format: { type: "json_object" } } : {}),
+  });
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body,
+        signal: AbortSignal.timeout(opts.timeoutMs ?? 30000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const content: string | undefined = data?.choices?.[0]?.message?.content;
+        return content ? content.trim() : null;
+      }
+      // Retry on rate-limit / server errors; give up on other 4xx.
+      if (res.status === 429 || res.status >= 500) {
+        const detail = await res.text();
+        console.warn(`callOpenAIChat ${res.status} (attempt ${attempt + 1}): ${detail.slice(0, 160)}`);
+        if (attempt < retries) {
+          await sleep(500 * 2 ** attempt + Math.floor(Math.random() * 250));
+          continue;
+        }
+      } else {
+        console.warn(`callOpenAIChat ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      }
+      return null;
+    } catch (err) {
+      console.warn(`callOpenAIChat error (attempt ${attempt + 1}):`, err);
+      if (attempt < retries) {
+        await sleep(500 * 2 ** attempt);
+        continue;
+      }
       return null;
     }
-    const data = await res.json();
-    const content: string | undefined = data?.choices?.[0]?.message?.content;
-    return content ? content.trim() : null;
-  } catch (err) {
-    console.warn("callOpenAIChat failed:", err);
-    return null;
   }
+  return null;
+}
+
+/**
+ * Parse JSON returned by an LLM, tolerating prose wrappers, ```json fences,
+ * and trailing commas. Returns null if no JSON object can be recovered.
+ */
+export function parseLlmJson<T = unknown>(content: string | null): T | null {
+  if (!content) return null;
+  const tryParse = (s: string): T | null => {
+    try {
+      return JSON.parse(s) as T;
+    } catch {
+      return null;
+    }
+  };
+  let direct = tryParse(content);
+  if (direct) return direct;
+  // Strip code fences.
+  const fenced = content.replace(/```(?:json)?/gi, "").trim();
+  direct = tryParse(fenced);
+  if (direct) return direct;
+  // Extract the outermost {...} or [...] block.
+  const match = fenced.match(/[{[][\s\S]*[}\]]/);
+  if (match) {
+    direct = tryParse(match[0]);
+    if (direct) return direct;
+    // Repair trailing commas.
+    const repaired = match[0].replace(/,\s*([}\]])/g, "$1");
+    direct = tryParse(repaired);
+    if (direct) return direct;
+  }
+  return null;
 }
 
 interface LlmInput {
@@ -311,58 +384,25 @@ export async function extractFinancialsWithLlm(
     "```",
   ].join("\n");
 
-  try {
-    const res = await fetch(`${DEFAULT_BASE.replace(/\/$/, "")}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: DEFAULT_MODEL,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-        temperature: 0,
-        max_tokens: 1500,
-        response_format: { type: "json_object" },
-      }),
-      signal: AbortSignal.timeout(30000),
-    });
+  const content = await callOpenAIChat(
+    [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+    { json: true, maxTokens: 1500, temperature: 0, timeoutMs: 30000 }
+  );
+  const parsed = parseLlmJson<Record<string, unknown>>(content);
+  if (!parsed) return null;
 
-    if (!res.ok) {
-      console.warn(`LLM extraction returned ${res.status}: ${await res.text()}`);
-      return null;
-    }
-    const data = await res.json();
-    const content: string = data?.choices?.[0]?.message?.content ?? "";
-    if (!content) return null;
+  const records = normaliseExtractedRecords(parsed.records);
+  if (records.length === 0) return null;
 
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(content);
-    } catch {
-      // Some models wrap JSON in prose; try to recover the JSON object.
-      const match = content.match(/\{[\s\S]*\}/);
-      if (!match) return null;
-      parsed = JSON.parse(match[0]);
-    }
-
-    const records = normaliseExtractedRecords(parsed.records);
-    if (records.length === 0) return null;
-
-    return {
-      companyName:
-        typeof parsed.companyName === "string" ? parsed.companyName : null,
-      currency: typeof parsed.currency === "string" ? parsed.currency : null,
-      records,
-      notes: Array.isArray(parsed.notes)
-        ? parsed.notes.filter((n): n is string => typeof n === "string")
-        : [],
-    };
-  } catch (err) {
-    console.warn("LLM extraction failed:", err);
-    return null;
-  }
+  return {
+    companyName: typeof parsed.companyName === "string" ? parsed.companyName : null,
+    currency: typeof parsed.currency === "string" ? parsed.currency : null,
+    records,
+    notes: Array.isArray(parsed.notes)
+      ? parsed.notes.filter((n): n is string => typeof n === "string")
+      : [],
+  };
 }

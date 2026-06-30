@@ -36,11 +36,13 @@ export interface UploadExtractionResponse {
   records: FinancialRecordInput[];
   warnings: string[];
   extraction: {
-    method: "csv" | "xlsx" | "pdf-llm" | "pdf-heuristic";
+    method: "csv" | "xlsx" | "pdf-llm" | "pdf-heuristic" | "pdf-vision";
     confidence: "high" | "medium" | "low";
     pages?: number;
     detectedCompanyName?: string | null;
     detectedCurrency?: string | null;
+    reconciliationConfidence?: number; // 0..1, from balance-sheet/identity checks
+    reconciliationIssues?: string[];
   };
   rlm?: RlmResult;
 }
