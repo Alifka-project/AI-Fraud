@@ -12,6 +12,7 @@
 
 import type { FinancialRecordInput } from "./types";
 import { extractFinancialsWithLlm } from "./llm";
+import { reconcileRecords } from "./reconcile";
 
 export type ExtractionMethod = "pdf-llm" | "pdf-heuristic" | "csv" | "xlsx";
 export type ExtractionConfidence = "high" | "medium" | "low";
@@ -136,13 +137,18 @@ const LINE_ITEM_ALIASES: Array<{
 // number of shares, which are reflected in thousands)" is correctly read as
 // millions — the thousands clause only applies to share counts, which we ignore.
 const UNIT_SCALE: Array<{ pattern: RegExp; scale: number }> = [
-  { pattern: /in billions|figures in billions|amounts in billions/i, scale: 1_000_000_000 },
-  { pattern: /in millions|aed million|figures in millions|amounts in millions|\$ in millions/i, scale: 1_000_000 },
-  { pattern: /in '?000s?\b|in thousands|aed '?000|figures in thousands|amounts in thousands/i, scale: 1_000 },
+  { pattern: /in billions|figures in billions|amounts in billions|billions of|nearest billion/i, scale: 1_000_000_000 },
+  { pattern: /in millions|millions of|(?:aed|usd|us\$|\$|د\.إ)\s*['’]?\s*mn\b|(?:aed|usd|\$)\s*million|figures in millions|amounts in millions|\$ in millions|expressed in millions|nearest million/i, scale: 1_000_000 },
+  // Match "AED'000", "AED 000", "AED ’000" (no space), "in thousands", etc.
+  { pattern: /in '?000s?\b|in thousands|thousands of|(?:aed|usd|us\$|\$|د\.إ)\s*['’]?\s*0{3}\b|figures in thousands|amounts in thousands|expressed in thousands|nearest thousand/i, scale: 1_000 },
 ];
 
-function detectScale(text: string): number {
-  const head = text.slice(0, 2000);
+export function detectScale(text: string): number {
+  // Search the whole focused window (already bounded to the statement pages, so
+  // ~22k chars). The "in millions/thousands" note can appear on any statement
+  // header, and its position shifts with page selection — searching all of it
+  // makes scale detection stable.
+  const head = text.slice(0, 40000);
   for (const { pattern, scale } of UNIT_SCALE) {
     if (pattern.test(head)) return scale;
   }
@@ -189,6 +195,103 @@ export function selectStatementWindow(text: string, span = 16000): string {
   }
   if (!Number.isFinite(start)) return text.slice(0, 18000);
   return text.slice(start, start + span);
+}
+
+// Statement title patterns (IFRS + US GAAP + bank terminology).
+const STATEMENT_TITLE =
+  /(?:consolidated\s+|condensed\s+|interim\s+|group\s+)*(?:statements?\s+of\s+(?:operations|income|profit\s+or\s+loss|comprehensive\s+income|financial\s+position|cash\s*flows?|earnings)|balance\s+sheets?|income\s+statements?|profit\s+and\s+loss(?:\s+account)?)/i;
+
+// Total / subtotal lines that appear in the body of a real statement (not a TOC).
+const STATEMENT_BODY =
+  /total\s+assets|total\s+liabilities|total\s+equity|total\s+current|net\s+(?:income|profit|loss|sales|revenue)|profit\s+for\s+the\s+(?:year|period)|(?:total\s+)?(?:operating\s+income|revenue|turnover)|cash\s+(?:generated|used|flows?|provided)[^.]{0,30}operating|total\s+comprehensive|net\s+interest\s+income|operating\s+expenses/gi;
+
+const BIG_NUMBER = /\d{1,3}(?:,\d{3})+(?:\.\d+)?|\(\d{1,3}(?:,\d{3})+\)/g;
+
+function countMatches(text: string, re: RegExp): number {
+  const m = text.match(re);
+  return m ? m.length : 0;
+}
+
+/**
+ * Score each page for being an actual financial-statement table and return the
+ * concatenated text of the best pages (in document order) plus their indices.
+ *
+ * This is the key fix for large filings: the financial statements in a 150-page
+ * 10-K or a 99-page annual report are buried deep, and the FIRST textual mention
+ * of "balance sheet" is almost always the table of contents or an MD&A sentence
+ * — which contain no figures. Scoring by (title-as-heading + total-lines +
+ * numeric density) finds the real statement pages instead.
+ */
+export function selectStatementText(
+  pageTexts: string[],
+  opts: { maxPages?: number; maxChars?: number } = {}
+): { text: string; pageIndices: number[] } {
+  const maxPages = opts.maxPages ?? 10;
+  const maxChars = opts.maxChars ?? 22000;
+
+  if (pageTexts.length <= 1) {
+    const single = pageTexts[0] ?? "";
+    return { text: selectStatementWindow(single, maxChars), pageIndices: [0] };
+  }
+
+  const scored = pageTexts.map((page, i) => {
+    const head = page.slice(0, 600);
+    let score = 0;
+    if (STATEMENT_TITLE.test(head)) score += 6; // title as a heading near top
+    else if (STATEMENT_TITLE.test(page)) score += 2; // title somewhere on page
+    score += Math.min(countMatches(page, STATEMENT_BODY), 8) * 2;
+    score += Math.min(countMatches(page, BIG_NUMBER), 40) * 0.25;
+    // Table-of-contents / index pages have titles but no figures.
+    if (/\bcontents\b|table of contents/i.test(head)) score -= 6;
+    if (/\.{4,}\s*\d{1,3}\b/.test(page) && countMatches(page, BIG_NUMBER) < 6) score -= 4;
+    return { i, score, len: page.length };
+  });
+
+  const ranked = scored.filter((s) => s.score >= 4).sort((a, b) => b.score - a.score);
+  if (ranked.length === 0) {
+    // Nothing scored as a statement — fall back to the whole-doc window.
+    return { text: selectStatementWindow(pageTexts.join("\n"), 18000), pageIndices: [] };
+  }
+
+  const chosen = new Set<number>();
+
+  // Guarantee at least the best page of EACH statement type (income, balance
+  // sheet, cash flow) is included — otherwise a balance sheet that ranks below
+  // several income-statement/MD&A pages can get cut from the window entirely.
+  const CATEGORIES: RegExp[] = [
+    /balance sheets?|statements? of financial position/i,
+    /statements? of operations|statements? of income|income statements?|profit\s+or\s+loss|profit\s+and\s+loss/i,
+    /statements? of cash\s*flows?/i,
+  ];
+  for (const cat of CATEGORIES) {
+    let best: { i: number; score: number } | null = null;
+    for (const s of scored) {
+      if (cat.test(pageTexts[s.i].slice(0, 600)) && (!best || s.score > best.score)) {
+        best = { i: s.i, score: s.score };
+      }
+    }
+    if (best && best.score >= 2) chosen.add(best.i);
+  }
+
+  // Fill the rest with the top-scored pages.
+  for (const s of ranked) {
+    if (chosen.size >= maxPages) break;
+    chosen.add(s.i);
+  }
+  // Include immediate continuation pages (statements spill onto the next page).
+  for (const i of [...chosen]) {
+    if (chosen.size < maxPages && pageTexts[i + 1]) chosen.add(i + 1);
+  }
+  const ordered = [...chosen].sort((a, b) => a - b);
+
+  let text = "";
+  const used: number[] = [];
+  for (const idx of ordered) {
+    if (text.length + pageTexts[idx].length > maxChars && text.length > 0) break;
+    text += (text ? "\n\n" : "") + pageTexts[idx];
+    used.push(idx);
+  }
+  return { text, pageIndices: used };
 }
 
 function dedupePreserveOrder(years: number[]): number[] {
@@ -311,9 +414,9 @@ export function heuristicExtract(fullText: string): {
   currency: string | null;
 } {
   const warnings: string[] = [];
-  // Focus on the core financial statements; keeps notes/MD&A/cover-page numbers
-  // from polluting the scan on large filings.
-  const text = selectStatementWindow(fullText);
+  // Caller usually passes already-focused statement text (via selectStatementText).
+  // Only re-window if it's a large raw document.
+  const text = fullText.length > 24000 ? selectStatementWindow(fullText) : fullText;
   const scale = detectScale(text);
   if (scale > 1) {
     warnings.push(`Detected values stated in units of ${scale.toLocaleString()}; figures were scaled to absolute amounts.`);
@@ -453,11 +556,27 @@ export async function extractFinancialsFromText(
     };
   }
 
-  // 1. LLM extraction (preferred). Feed it the focused statement window so the
-  //    income statement, balance sheet, and cash-flow statement all fit within
-  //    the token budget even for long filings.
-  const llm = await extractFinancialsWithLlm(selectStatementWindow(trimmed, 15000));
-  if (llm && llm.records.length > 0) {
+  // Detect the unit scale once from the header and use it both to guide the LLM
+  // (return figures as printed, we apply the multiplier) and the heuristic.
+  const scale = detectScale(trimmed);
+
+  // 1. LLM extraction (preferred when a key is set). `trimmed` is already the
+  //    focused statement pages; only re-window a large raw document.
+  const forLlm = trimmed.length > 22000 ? selectStatementWindow(trimmed, 20000) : trimmed;
+  const llm = await extractFinancialsWithLlm(forLlm, scale);
+  const llmRecon = llm ? reconcileRecords(llm.records).confidence : 0;
+
+  // 2. Heuristic — always run (cheap) so we can cross-check the LLM. For
+  //    well-structured US-GAAP statements the deterministic parser is often
+  //    more reliable; for IFRS/bank layouts the LLM wins. Pick the better.
+  const h = heuristicExtract(trimmed);
+  const hRecon = h.records.length ? reconcileRecords(h.records).confidence : 0;
+
+  const llmGood = !!llm && llm.records.length > 0;
+  // Prefer the LLM when it reconciles well; otherwise take whichever is higher.
+  const useLlm = llmGood && (llmRecon >= 0.8 || llmRecon >= hRecon);
+
+  if (useLlm && llm) {
     return {
       records: llm.records,
       warnings: [
@@ -465,23 +584,35 @@ export async function extractFinancialsFromText(
         ...llm.notes,
       ],
       method: "pdf-llm",
-      confidence: "medium",
+      confidence: llmRecon >= 0.8 ? "high" : "medium",
       companyName: llm.companyName,
       currency: llm.currency,
     };
   }
 
-  // 2. Heuristic fallback.
-  const h = heuristicExtract(trimmed);
+  if (h.records.length > 0) {
+    return {
+      records: h.records,
+      warnings: [
+        llmGood
+          ? "Figures were extracted by a rule-based parser (it reconciled better than the AI pass here). Review and correct the table below before analysis."
+          : "Figures were extracted using a rule-based parser. Review and correct the table below before analysis.",
+        ...h.warnings,
+      ],
+      method: "pdf-heuristic",
+      confidence: hRecon >= 0.8 ? "high" : "low",
+      companyName: h.companyName,
+      currency: h.currency,
+    };
+  }
+
+  // Nothing usable from either path.
   return {
-    records: h.records,
-    warnings: [
-      "Figures were extracted using a rule-based parser (no AI key configured). Review and correct the table below before analysis.",
-      ...h.warnings,
-    ],
-    method: "pdf-heuristic",
+    records: llm?.records ?? [],
+    warnings: ["Could not extract financial figures from this document."],
+    method: llmGood ? "pdf-llm" : "pdf-heuristic",
     confidence: "low",
-    companyName: h.companyName,
-    currency: h.currency,
+    companyName: llm?.companyName ?? null,
+    currency: llm?.currency ?? null,
   };
 }

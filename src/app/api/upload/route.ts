@@ -2,8 +2,16 @@ import { NextResponse } from "next/server";
 import { parseFinancialsCsv } from "@/lib/csv-parser";
 import { parseXlsxBuffer } from "@/lib/xlsx-parser";
 import { extractPdfText } from "@/lib/pdf-extract";
-import { extractFinancialsFromText } from "@/lib/financial-extractor";
-import { extractFinancialsWithVision, visionAvailable } from "@/lib/vision-extract";
+import {
+  extractFinancialsFromText,
+  selectStatementText,
+  detectScale,
+} from "@/lib/financial-extractor";
+import {
+  extractFinancialsWithVision,
+  visionAvailable,
+  buildStatementSubPdf,
+} from "@/lib/vision-extract";
 import { reconcileRecords } from "@/lib/reconcile";
 import { runRecursiveDiligence } from "@/lib/rlm";
 import type { FinancialRecordInput, UploadExtractionResponse } from "@/lib/types";
@@ -13,7 +21,10 @@ export const dynamic = "force-dynamic";
 // PDF + LLM/vision extraction can take a while; allow headroom on Vercel.
 export const maxDuration = 90;
 
-const MAX_BYTES = 15 * 1024 * 1024; // 15 MB
+// Note: Vercel serverless functions cap the request body at ~4.5 MB regardless
+// of this value; very large reports must be uploaded on a self-hosted deploy or
+// trimmed to the statements. We allow more here for local/self-hosted use.
+const MAX_BYTES = 25 * 1024 * 1024; // 25 MB
 
 /**
  * Parses an uploaded CSV / Excel / PDF financial statement and returns the
@@ -99,9 +110,14 @@ export async function POST(req: Request) {
 
     // ---- PDF ----------------------------------------------------------------
     if (name.endsWith(".pdf") || file.type === "application/pdf") {
-      const { text, pages } = await extractPdfText(buffer);
+      const { text, pageTexts, pages } = await extractPdfText(buffer);
 
-      // 1. Text-layer extraction (heuristic or text-LLM).
+      // Locate the ACTUAL financial-statement pages. In a large filing the
+      // first textual mention of "balance sheet" is the table of contents or an
+      // MD&A sentence (no numbers); page scoring finds the real tables instead.
+      const { text: statementText, pageIndices } = selectStatementText(pageTexts);
+
+      // 1. Text-layer extraction (text-LLM or heuristic) on the focused pages.
       let method: UploadExtractionResponse["extraction"]["method"] = "pdf-heuristic";
       let confidence: UploadExtractionResponse["extraction"]["confidence"] = "low";
       let records: FinancialRecordInput[] = [];
@@ -109,7 +125,7 @@ export async function POST(req: Request) {
       let companyName: string | null = null;
       let currency: string | null = null;
 
-      const textResult = await extractFinancialsFromText(text);
+      const textResult = await extractFinancialsFromText(statementText || text);
       records = textResult.records;
       warnings = textResult.warnings;
       method = textResult.method;
@@ -126,12 +142,21 @@ export async function POST(req: Request) {
         recs.length === 0 || recs.every((r) => !r.revenue && !r.totalAssets && !r.netIncome);
 
       // 2. Escalate to vision/OCR when the text path produced nothing, an
-      //    all-zero skeleton, or low-confidence figures. OpenAI reads the PDF
-      //    natively (rasterise + OCR) — the most accurate path.
+      //    all-zero skeleton, or low-confidence figures. For large filings we
+      //    send only the statement pages (a small sub-PDF) so we stay within
+      //    OpenAI's per-request page limit and keep it fast.
       const weak = coreEmpty(records) || recon.confidence < 0.8;
       if (weak && visionAvailable()) {
         try {
-          const vision = await extractFinancialsWithVision(buffer);
+          let visionBuffer: ArrayBuffer = buffer;
+          if (pageIndices.length > 0 && pages > pageIndices.length) {
+            const sub = await buildStatementSubPdf(buffer, pageIndices);
+            if (sub) visionBuffer = sub;
+          }
+          const vision = await extractFinancialsWithVision(
+            visionBuffer,
+            detectScale(statementText || text)
+          );
           if (vision && vision.records.length > 0 && !coreEmpty(vision.records)) {
             const visionRecon = reconcileRecords(vision.records);
             // Adopt vision when the text path was empty/all-zero, or vision

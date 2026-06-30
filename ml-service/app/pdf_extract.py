@@ -61,9 +61,10 @@ LINE_ITEM_ALIASES: List[Tuple[str, List[str]]] = [
 # Checked billions -> millions -> thousands so "(In millions, except shares in
 # thousands)" is correctly read as millions.
 UNIT_SCALES = [
-    (re.compile(r"in billions|figures in billions|amounts in billions", re.I), 1_000_000_000),
-    (re.compile(r"in millions|aed million|figures in millions|amounts in millions|\$ in millions", re.I), 1_000_000),
-    (re.compile(r"in '?000s?\b|in thousands|aed '?000|figures in thousands|amounts in thousands", re.I), 1_000),
+    (re.compile(r"in billions|figures in billions|amounts in billions|billions of|nearest billion", re.I), 1_000_000_000),
+    (re.compile(r"in millions|millions of|(?:aed|usd|us\$|\$)\s*['’]?\s*mn\b|(?:aed|usd|\$)\s*million|figures in millions|amounts in millions|\$ in millions|expressed in millions|nearest million", re.I), 1_000_000),
+    # Match "AED'000" / "AED ’000" (no space, common in UAE/IFRS filings), "in thousands", etc.
+    (re.compile(r"in '?000s?\b|in thousands|thousands of|(?:aed|usd|us\$|\$)\s*['’]?\s*0{3}\b|figures in thousands|amounts in thousands|expressed in thousands|nearest thousand", re.I), 1_000),
 ]
 
 MONTHS = (
@@ -91,6 +92,55 @@ def _select_statement_window(text: str, span: int = 16000) -> str:
     if start is None:
         return text[:18000]
     return text[start:start + span]
+
+
+_STMT_TITLE = re.compile(
+    r"(?:consolidated\s+|condensed\s+|interim\s+|group\s+)*(?:statements?\s+of\s+(?:operations|income|profit\s+or\s+loss|comprehensive\s+income|financial\s+position|cash\s*flows?|earnings)|balance\s+sheets?|income\s+statements?|profit\s+and\s+loss(?:\s+account)?)",
+    re.I,
+)
+_STMT_BODY = re.compile(
+    r"total\s+assets|total\s+liabilities|total\s+equity|total\s+current|net\s+(?:income|profit|loss|sales|revenue)|profit\s+for\s+the\s+(?:year|period)|operating\s+income|revenue|turnover|cash\s+(?:generated|used|flows?|provided)|net\s+interest\s+income",
+    re.I,
+)
+_BIG_NUM = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\(\d{1,3}(?:,\d{3})+\)")
+
+
+def _select_statement_text(page_texts: List[str], max_pages: int = 10, max_chars: int = 18000) -> str:
+    """Page-aware: score each page and concatenate the real statement pages.
+    In a large filing the first mention of 'balance sheet' is the table of
+    contents/MD&A (no numbers); scoring finds the actual statement tables."""
+    if len(page_texts) <= 1:
+        return _select_statement_window(page_texts[0] if page_texts else "", max_chars)
+
+    scored = []
+    for i, page in enumerate(page_texts):
+        head = page[:600]
+        score = 0.0
+        if _STMT_TITLE.search(head):
+            score += 6
+        elif _STMT_TITLE.search(page):
+            score += 2
+        score += min(len(_STMT_BODY.findall(page)), 8) * 2
+        score += min(len(_BIG_NUM.findall(page)), 40) * 0.25
+        if re.search(r"\bcontents\b|table of contents", head, re.I):
+            score -= 6
+        if re.search(r"\.{4,}\s*\d{1,3}\b", page) and len(_BIG_NUM.findall(page)) < 6:
+            score -= 4
+        scored.append((i, score))
+
+    ranked = sorted([s for s in scored if s[1] >= 4], key=lambda s: -s[1])
+    if not ranked:
+        return _select_statement_window("\n".join(page_texts), 18000)
+    chosen = set(i for i, _ in ranked[:max_pages])
+    for i, _ in ranked[:max_pages]:
+        if len(chosen) < max_pages and i + 1 < len(page_texts):
+            chosen.add(i + 1)
+    out = ""
+    for idx in sorted(chosen):
+        if out and len(out) + len(page_texts[idx]) > max_chars:
+            break
+        out += ("\n\n" if out else "") + page_texts[idx]
+    return out
 
 
 def _detect_currency(text: str):
@@ -121,6 +171,19 @@ def extract_pdf_text(raw: bytes) -> Tuple[str, int]:
         for page in pdf.pages:
             chunks.append(page.extract_text() or "")
     return "\n".join(chunks), pages
+
+
+def extract_pdf_page_texts(raw: bytes) -> List[str]:
+    """Per-page text, used for page-aware statement selection on large filings."""
+    try:
+        import pdfplumber
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"pdfplumber not installed: {exc}")
+    out: List[str] = []
+    with pdfplumber.open(io.BytesIO(raw)) as pdf:
+        for page in pdf.pages:
+            out.append(page.extract_text() or "")
+    return out
 
 
 def _detect_scale(text: str) -> int:
@@ -444,7 +507,8 @@ def extract_financials_from_pdf(
     raw: bytes,
 ) -> Tuple[List[Dict], List[str], str, Optional[str], Optional[str]]:
     """Return (records, warnings, method, detected_company_name, currency)."""
-    text, _pages = extract_pdf_text(raw)
+    page_texts = extract_pdf_page_texts(raw)
+    text = "\n".join(page_texts)
 
     # Scanned / image-only PDF (no text layer) → vision OCR.
     if not text.strip():
@@ -457,7 +521,8 @@ def extract_financials_from_pdf(
             ], "pdf-vision", company, currency
         return [], ["No text layer found (scanned image). Configure OPENAI_API_KEY for OCR."], "pdf-empty", None, None
 
-    window = _select_statement_window(text, 15000)
+    # Page-aware: feed the LLM the actual statement pages, not the table of contents.
+    window = _select_statement_text(page_texts)
     llm = llm_extract(window)
     if llm is not None:
         records, company, currency, notes = llm
@@ -467,6 +532,6 @@ def extract_financials_from_pdf(
         ]
         return records, warnings, "pdf-llm", company, currency
 
-    records, warnings = heuristic_extract(text)
+    records, warnings = heuristic_extract(window)
     warnings.insert(0, "Figures extracted by a rule-based parser (no AI key). Review carefully.")
     return records, warnings, "pdf-heuristic", None, _detect_currency(text)
